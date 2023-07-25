@@ -20,6 +20,6 @@ pluginManagement {
         id("org.jetbrains.compose").version(extra["compose.version"] as String)
     }
 }
-rootProject.name = "imc-core-demo"
+rootProject.name = "imc-core"
 include(":app")
 include(":imc-core")
