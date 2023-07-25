@@ -32,6 +32,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.compose.runtime:runtime:1.0.0")
     implementation ("androidx.fragment:fragment-ktx:1.5.7")
     implementation ("androidx.activity:activity-ktx:1.7.2")
     implementation(project(":imc-core"))
