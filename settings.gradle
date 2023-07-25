@@ -1,0 +1,73 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+        maven{
+            url = "https://maven.aliyun.com/repository/google"
+        }
+        maven{
+            url = "https://maven.aliyun.com/repository/public"
+        }
+        maven{
+            url = "https://maven.aliyun.com/repository/releases"
+        }
+        maven{
+            url = "https://maven.aliyun.com/repository/central"
+        }
+        maven{
+            url = "https://jitpack.io"
+        }
+        maven{
+            url = "https://maven.pkg.jetbrains.space/public/p/compose/dev"
+        }
+        maven{
+            url = "https://maven.pkg.jetbrains.space/kotlin/p/kotlin/bootstrap/"
+        }
+        maven{
+            url = "https://devrepo.devcloud.cn-east-3.huaweicloud.com/artgalaxy/cn-east-3_74e793c6bfdf4b258360413fd0eba4c7_maven_2_2/"
+            credentials {
+                username = "cn-east-3_74e793c6bfdf4b258360413fd0eba4c7_32540a29aa2e4157a4d3a0233c5b895b"
+                password = "6l^EL-1aVx"
+            }
+        }
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven{
+            url = "https://maven.aliyun.com/repository/google"
+        }
+        maven{
+            url = "https://maven.aliyun.com/repository/public"
+        }
+        maven{
+            url = "https://maven.aliyun.com/repository/releases"
+        }
+        maven{
+            url = "https://maven.aliyun.com/repository/central"
+        }
+        maven{
+            url = "https://jitpack.io"
+        }
+        maven{
+            url = "https://maven.pkg.jetbrains.space/public/p/compose/dev"
+        }
+        maven{
+            url = "https://maven.pkg.jetbrains.space/kotlin/p/kotlin/bootstrap/"
+        }
+        maven{
+            url = "https://devrepo.devcloud.cn-east-3.huaweicloud.com/artgalaxy/cn-east-3_74e793c6bfdf4b258360413fd0eba4c7_maven_2_2/"
+            credentials {
+                username = "cn-east-3_74e793c6bfdf4b258360413fd0eba4c7_32540a29aa2e4157a4d3a0233c5b895b"
+                password = "6l^EL-1aVx"
+            }
+        }
+    }
+}
+rootProject.name = "imc-core-demo"
+include ':app'
+include ':imc-core'
