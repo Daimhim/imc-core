@@ -14,7 +14,7 @@ java {
 
 dependencies {
     compileOnly("com.squareup.okhttp3:okhttp:4.9.0")
-    compileOnly("timber.multiplatform.log:timber-desktop:2.5.3-SNAPSHOT")
+    compileOnly("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.5")
 }
 
 afterEvaluate{
@@ -28,9 +28,9 @@ afterEvaluate{
             }
         }
         repositories {
-//            maven {
-//                url = uri("../repo")
-//            }
+            maven {
+                url = uri("../repo")
+            }
         }
     }
 }
