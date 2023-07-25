@@ -5,7 +5,6 @@ import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.viewModels
-import androidx.core.content.ContentProviderCompat.requireContext
 import androidx.lifecycle.lifecycleScope
 import com.kongqw.network.monitor.NetworkMonitorManager
 import com.kongqw.network.monitor.enums.NetworkState
@@ -13,7 +12,6 @@ import com.kongqw.network.monitor.interfaces.NetworkMonitor
 import kotlinx.coroutines.launch
 import org.daimhim.imc_core.IEngineState
 import org.daimhim.imc_core.demo.databinding.ActivityMainBinding
-import org.daimhim.imc_core.demo.databinding.MainAdapterItemBinding
 import timber.multiplatform.log.Timber
 
 class MainActivity : AppCompatActivity() {

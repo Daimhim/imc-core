@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.namespace"
+    namespace = "org.daimhim.imc_core.demo"
     compileSdkVersion(33)
     defaultConfig {
         applicationId  = "org.daimhim.imc_core.demo"
