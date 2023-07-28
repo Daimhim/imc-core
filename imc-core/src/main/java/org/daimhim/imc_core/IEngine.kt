@@ -23,11 +23,11 @@ interface IEngine {
     /**
      * 消息发送
      */
-    fun send(byteString: ByteString)
+    fun send(byteString: ByteString):Boolean
     /**
      * 消息发送
      */
-    fun send(text: String)
+    fun send(text: String):Boolean
 
     /**
      * 订阅定制监听
