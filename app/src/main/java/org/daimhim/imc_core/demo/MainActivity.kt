@@ -105,6 +105,9 @@ class MainActivity : AppCompatActivity() {
             _binding.rvList.scrollToPosition(0)
             _binding.editTextTextPersonName2.setText("")
         }
+        _binding.btChangeMode.setOnClickListener {
+            _viewModel.setForeground(!_binding.btChangeMode.isChecked)
+        }
     }
 
     private fun initView() {

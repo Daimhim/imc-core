@@ -289,7 +289,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
                     override fun onFailure(iEngine: IEngine, t: Throwable) {
                         Timber.i("AutoReconnect ReconnectTask onFailure")
                         if (autoReconnect.reconnectDelay < autoReconnect.webSocketEngine.maxReconnectDelay) {
-                            autoReconnect.reconnectDelay = autoReconnect.reconnectDelay * 2
+                            autoReconnect.reconnectDelay *= 2
                         }
                         autoReconnect.rescheduleReconnectCycle(autoReconnect.reconnectDelay)
                     }
@@ -319,11 +319,13 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         private lateinit var webSocketEngine: WebSocketEngine
         private val sync = Object()
         private lateinit var customHeartbeat : CustomHeartbeat
+        private var isActive = false
 
         fun initHeartbeat(engine: WebSocketEngine,heartbeat : CustomHeartbeat, name: String) {
             Timber.d("Heartbeat 初始化心跳机制")
             customHeartbeat = heartbeat
             webSocketEngine = engine
+            heartbeatInterval = engine.builder.minHeartbeatInterval.toLong()
             webSocketEngine.removeIMCSocketListener(this)
             webSocketEngine.addIMCSocketListener(9, this)
             scheduledExecutorService = Executors.newSingleThreadExecutor()
@@ -332,13 +334,20 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         fun startHeartbeat() {
             Timber.d("Heartbeat 启动心跳")
             stopHeartbeat()
+            isActive = true
             awaitingPong = false
+            auxiliaryHeartbeat = false
             currentScheduledFuture = scheduledExecutorService
                 .submit(PingRunnable())
         }
 
         fun stopHeartbeat() {
             Timber.d("Heartbeat 停止心跳")
+            isActive = false
+            synchronized(sync){
+                sync.notify()
+            }
+            currentScheduledFuture?.get()
             currentScheduledFuture?.cancel(true)
             currentScheduledFuture = null
         }
@@ -364,14 +373,14 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
             synchronized(sync){
                 sync.notify()
             }
-            return false
+            return !isActive
         }
 
         private inner class PingRunnable : Runnable {
             override fun run() {
                 while (!awaitingPong){
                     if (auxiliaryHeartbeat){
-                        Timber.d("Heartbeat 辅助心跳回执00 $auxiliaryHeartbeat")
+                        Timber.d("Heartbeat isActive $isActive 辅助心跳回执00 $auxiliaryHeartbeat")
                         auxiliaryHeartbeat = false
                        try {
                            synchronized(sync) {
@@ -383,7 +392,10 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
                         Timber.d("Heartbeat 辅助心跳回执11 $auxiliaryHeartbeat")
                         continue
                     }
-                    Timber.d("Heartbeat 发送心跳00 $auxiliaryHeartbeat")
+                    if (!isActive){
+                        return
+                    }
+                    Timber.d("Heartbeat isActive $isActive 发送心跳00 $auxiliaryHeartbeat")
                     awaitingPong = true
                     if (customHeartbeat.byteOrString()){
                         webSocketEngine.send(customHeartbeat.byteHeartbeat())
@@ -396,6 +408,9 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
                         }
                     }catch (e:Exception){
                         e.printStackTrace()
+                    }
+                    if (!isActive){
+                        return
                     }
                     Timber.d("Heartbeat 发送心跳11 $auxiliaryHeartbeat")
                 }
