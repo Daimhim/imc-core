@@ -102,7 +102,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         Timber.d("engineOn 222")
         // 初始化心跳
         val name = "WebSocketEngine ${request.url.redact()}"
-        heartbeat.initHeartbeat(getIEngine(), name)
+        heartbeat.initHeartbeat(getIEngine(),builder.customHeartbeat(), name)
         autoReconnect.initAutoReconnect(getIEngine(), name)
         connect(request, engineActionListener)
     }
@@ -151,7 +151,6 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         synchronized(connectLock) {
             connected = false
         }
-
         val close = webSocket?.close(IEngineState.ENGINE_CLOSED, "engineOff") ?: false
         Timber.i("engineOff $close")
         if (webSocket != null && !close) {
@@ -267,7 +266,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
                 reconnectFuture = reconnectTimer?.schedule(
                     ReconnectTask(this),
                     delay, TimeUnit.MILLISECONDS
-                );
+                )
             } else {
                 reconnectDelay = delay
                 startReconnectCycle()
@@ -309,110 +308,104 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
 
     private class Heartbeat : V2IMCSocketListener<IEngine> {
         var heartbeatInterval = 5 * 1000L
+        // 心跳响应
         private var awaitingPong = false
-        private var scheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+        // 辅助心跳响应
+        private var auxiliaryHeartbeat = false
+        // 心跳计时所在线程池
+        private lateinit var scheduledExecutorService : ExecutorService
+        // 心跳所在线程
         private var currentScheduledFuture: Future<*>? = null
         private lateinit var webSocketEngine: WebSocketEngine
-        private val lockHeartbeat = ReentrantLock()
-        private val available = lockHeartbeat.newCondition()
-        private var isActive = false
+        private val sync = Object()
+        private lateinit var customHeartbeat : CustomHeartbeat
 
-        private var auxiliaryHeartbeat = false
-
-        fun initHeartbeat(engine: WebSocketEngine, name: String) {
-            Timber.d("Heartbeat PingRunnable initHeartbeat")
+        fun initHeartbeat(engine: WebSocketEngine,heartbeat : CustomHeartbeat, name: String) {
+            Timber.d("Heartbeat 初始化心跳机制")
+            customHeartbeat = heartbeat
             webSocketEngine = engine
             webSocketEngine.removeIMCSocketListener(this)
             webSocketEngine.addIMCSocketListener(9, this)
+            scheduledExecutorService = Executors.newSingleThreadExecutor()
         }
 
         fun startHeartbeat() {
-            Timber.d("Heartbeat PingRunnable startHeartbeat")
-            lockHeartbeat.lock()
+            Timber.d("Heartbeat 启动心跳")
+            stopHeartbeat()
             awaitingPong = false
-            auxiliaryHeartbeat = false
-            try {
-                if (!isActive){
-                    currentScheduledFuture = scheduledExecutorService
-                        .submit(PingRunnable())
-                }else{
-                    available.signal()
-                }
-            }finally {
-                lockHeartbeat.unlock()
-            }
-            Timber.d("Heartbeat PingRunnable minAuxiliaryHeartbeatCalculationTime")
+            currentScheduledFuture = scheduledExecutorService
+                .submit(PingRunnable())
         }
 
         fun stopHeartbeat() {
-            Timber.d("Heartbeat PingRunnable stopHeartbeat")
-            lockHeartbeat.lock()
-            try {
-                currentScheduledFuture?.cancel(true)
-                currentScheduledFuture = null
-            }finally {
-                lockHeartbeat.unlock()
-            }
-
+            Timber.d("Heartbeat 停止心跳")
+            currentScheduledFuture?.cancel(true)
+            currentScheduledFuture = null
         }
 
-
         override fun onMessage(iEngine: IEngine, text: String): Boolean {
-            return updateAuxiliaryHeartbeat(false)
+            return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,text))
         }
 
         override fun onMessage(iEngine: IEngine, bytes: ByteString): Boolean {
-            return updateAuxiliaryHeartbeat(bytes == ByteString.EMPTY)
+            return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,bytes))
         }
 
         private fun updateAuxiliaryHeartbeat(isHeartbeat:Boolean):Boolean {
-            lockHeartbeat.lock()
-            Timber.d("Heartbeat PingRunnable onMessage  bytes 111 $isHeartbeat")
-            try {
-                //心跳
-                if (isHeartbeat) {
-                    awaitingPong = false
-                    return true
-                }
-                auxiliaryHeartbeat = true
-                available.signal()
-            }finally {
-                lockHeartbeat.unlock()
+            //心跳
+            awaitingPong = false
+            if (isHeartbeat){
+                Timber.d("Heartbeat 心跳回执")
+                return true
+            }
+            //辅助心跳
+            Timber.d("Heartbeat 辅助心跳回执")
+            auxiliaryHeartbeat = true
+            synchronized(sync){
+                sync.notify()
             }
             return false
         }
 
         private inner class PingRunnable : Runnable {
             override fun run() {
-                lockHeartbeat.lock()
-                isActive = true
-                try {
-                    while (true){
-                        Timber.d("Heartbeat PingRunnable run ${awaitingPong}")
-                        if (awaitingPong) {
-                            webSocketEngine.failWebSocket(
-                                    SocketTimeoutException(
-                                        "sent ping but didn't receive pong within " +
-                                                "${heartbeatInterval}ms"
-                                    ), null
-                                )
-                            return
-                        }
-                        Timber.d("Heartbeat PingRunnable run 111 auxiliaryHeartbeat ${auxiliaryHeartbeat}")
-                        if (auxiliaryHeartbeat){
-                            auxiliaryHeartbeat = false
-                            val await = available.await(heartbeatInterval, TimeUnit.MILLISECONDS)
-                            continue
-                        }
-                        Timber.d("Heartbeat PingRunnable run 222 awaitingPong$awaitingPong heartbeatInterval${heartbeatInterval} ")
-                        awaitingPong = true
-                        webSocketEngine.send(ByteString.EMPTY)
-                        val await = available.await(heartbeatInterval, TimeUnit.MILLISECONDS)
+                while (!awaitingPong){
+                    if (auxiliaryHeartbeat){
+                        Timber.d("Heartbeat 辅助心跳回执00 $auxiliaryHeartbeat")
+                        auxiliaryHeartbeat = false
+                       try {
+                           synchronized(sync) {
+                               sync.wait(heartbeatInterval)
+                           }
+                       }catch (e:Exception){
+                           e.printStackTrace()
+                       }
+                        Timber.d("Heartbeat 辅助心跳回执11 $auxiliaryHeartbeat")
+                        continue
                     }
-                }finally {
-                    isActive = false
-                    lockHeartbeat.unlock()
+                    Timber.d("Heartbeat 发送心跳00 $auxiliaryHeartbeat")
+                    awaitingPong = true
+                    if (customHeartbeat.byteOrString()){
+                        webSocketEngine.send(customHeartbeat.byteHeartbeat())
+                    }else{
+                        webSocketEngine.send(customHeartbeat.stringHeartbeat())
+                    }
+                    try {
+                        synchronized(sync){
+                            sync.wait(heartbeatInterval)
+                        }
+                    }catch (e:Exception){
+                        e.printStackTrace()
+                    }
+                    Timber.d("Heartbeat 发送心跳11 $auxiliaryHeartbeat")
                 }
+                Timber.d("Heartbeat 心跳无回执 $awaitingPong")
+                webSocketEngine.failWebSocket(
+                    SocketTimeoutException(
+                        "sent ping but didn't receive pong within " +
+                                "${heartbeatInterval}ms"
+                    ), null
+                )
             }
 
         }
@@ -451,6 +444,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         internal var maxHeartbeatInterval = 45 * 1000
         internal var minHeartbeatInterval = 5 * 1000
         internal var maxReconnectDelay = 128 * 1000
+        internal var customHeartbeat : CustomHeartbeat? = null
 
         /**
          * Ok http client
@@ -464,6 +458,13 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
 
         fun okHttpClient(okHttpClient: OkHttpClient) = apply {
             this.okHttpClient = okHttpClient
+        }
+
+        fun customHeartbeat(): CustomHeartbeat =
+            customHeartbeat ?: DefCustomHeartbeat()
+
+        fun customHeartbeat(customHeartbeat: CustomHeartbeat) = apply {
+            this.customHeartbeat = customHeartbeat
         }
 
         fun heartbeatInterval(min: Long, max: Long, unit: TimeUnit) = apply {

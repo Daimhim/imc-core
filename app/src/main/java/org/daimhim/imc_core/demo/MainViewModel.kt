@@ -22,8 +22,8 @@ class MainViewModel : ViewModel() {
     private val _onMessage = MutableSharedFlow<MainItem>()
     val onMessage : SharedFlow<MainItem> =_onMessage
 
-//    private val BASE_URL = "ws://419d3270.r9.cpolar.top"
-    private val BASE_URL = "http://127.0.0.1:3390/v1"
+    private val BASE_URL = "ws://2b9b0b3.r12.cpolar.top"
+//    private val BASE_URL = "ws://124.222.224.186:8800"
 
 
     private var iEngine : WebSocketEngine = WebSocketEngine
