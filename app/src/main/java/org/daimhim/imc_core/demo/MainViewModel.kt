@@ -1,6 +1,5 @@
 package org.daimhim.imc_core.demo
 
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -22,17 +21,19 @@ class MainViewModel : ViewModel() {
     private val _onMessage = MutableSharedFlow<MainItem>()
     val onMessage : SharedFlow<MainItem> =_onMessage
 
-    private val BASE_URL = "ws://2b9b0b3.r12.cpolar.top"
+//    private val BASE_URL = "ws://2b9b0b3.r12.cpolar.top"
+    private val BASE_URL = "wss://client.qgbtech.cn/ws:90?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOiIxMTk5MjQ0MzIxMjU0MTUwMTQ0Iiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiMTMwODg5NTYxMTIiLCJsb2dpbiI6MTY5MDUyNTI3M30.SVbpqPluVnAoFf_tauafCabh-RfTcXslFD_C95aOKBDfoMM_yOBM16L6Y17q0EpL-eBZc6oi0RQWpAQUYKVbgdboEq3ZFItAMSEphJENcLLKgyy8PVw5cIlNapa9Eq3-wArZHI2qc3ICsR6_FJqH5rEnir6jqXPEqJMdhPvoDkg&name=202206211949282&platform=android"
 //    private val BASE_URL = "ws://124.222.224.186:8800"
 
 
-    private var iEngine : WebSocketEngine = WebSocketEngine
+    private var iEngine : OkhttpIEngine = OkhttpIEngine
         .Builder()
         .okHttpClient(
             OkHttpClient
                 .Builder()
 //            .connectTimeout(5L,TimeUnit.SECONDS)
                 .build())
+        .customHeartbeat(QGBHeartbeat())
         .build()
     init {
         iEngine.setIMCStatusListener(object : IMCStatusListener {

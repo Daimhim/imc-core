@@ -1,18 +1,16 @@
 package org.daimhim.imc_core
 
-import okio.ByteString
-
-class V2RealRecipient<T> : V2IMCSocketListener<T> {
+class V2RealRecipient : V2IMCSocketListener {
     private val imcListeners = mutableListOf<V2IMCListener>()
 
-    override fun onMessage(iEngine: T, text: String):Boolean {
+    override fun onMessage(iEngine: IEngine, text: String):Boolean {
         imcListeners.forEach {
             it.onMessage(text)
         }
         return super.onMessage(iEngine, text)
     }
 
-    override fun onMessage(iEngine: T, bytes: ByteString): Boolean {
+    override fun onMessage(iEngine: IEngine, bytes: ByteArray): Boolean {
         imcListeners.forEach {
             it.onMessage(bytes)
         }

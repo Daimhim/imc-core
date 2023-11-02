@@ -6,21 +6,21 @@ import java.util.TreeMap
 /**
  * 0~10 底层保留
  */
-class IMCListenerManager<T>  {
+class IMCListenerManager  {
     companion object {
         val DEFAULT_LEVEL = 15
     }
 
-    private val imcSocketListeners = TreeMap<Int, MutableList<V2IMCSocketListener<T>>>()
+    private val imcSocketListeners = TreeMap<Int, MutableList<V2IMCSocketListener>>()
     // 监听分发和定向监听分发
-    private val v2RealRecipient = V2RealRecipient<T>()
+    private val v2RealRecipient = V2RealRecipient()
 
     init {
         // 加入分发器
         addIMCSocketListener(DEFAULT_LEVEL,v2RealRecipient)
     }
 
-    fun addIMCSocketListener(level: Int, listener: V2IMCSocketListener<T>) {
+    fun addIMCSocketListener(level: Int, listener: V2IMCSocketListener) {
         synchronized(imcSocketListeners) {
             val v2IMCSocketListeners = imcSocketListeners[level] ?: mutableListOf()
             v2IMCSocketListeners.add(listener)
@@ -28,7 +28,7 @@ class IMCListenerManager<T>  {
         }
     }
 
-    fun removeIMCSocketListener(listener: V2IMCSocketListener<T>) {
+    fun removeIMCSocketListener(listener: V2IMCSocketListener) {
         synchronized(imcSocketListeners) {
             val mutableListOf = mutableListOf<Int>()
             imcSocketListeners
@@ -44,7 +44,7 @@ class IMCListenerManager<T>  {
         }
     }
 
-    fun onMessage(iEngine: T, text: String) {
+    fun onMessage(iEngine: IEngine, text: String) {
         synchronized(imcSocketListeners) {
             imcSocketListeners
                 .forEach { (t, u) ->
@@ -61,13 +61,13 @@ class IMCListenerManager<T>  {
                 }
         }
     }
-    fun onMessage(iEngine: T, bytes: ByteString) {
+    fun onMessage(iEngine: IEngine, bytes: ByteString) {
         synchronized(imcSocketListeners) {
             imcSocketListeners
                 .forEach { (t, u) ->
                     u.forEach {
                         try {
-                            val onMessage = it.onMessage(iEngine, bytes)
+                            val onMessage = it.onMessage(iEngine, bytes.toByteArray())
                             if (onMessage) {
                                 return@synchronized
                             }

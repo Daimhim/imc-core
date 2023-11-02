@@ -4,13 +4,14 @@ import okhttp3.*
 import okhttp3.internal.checkDuration
 import okhttp3.internal.ws.RealWebSocket
 import okio.ByteString
+import okio.ByteString.Companion.toByteString
+import org.daimhim.imc_core.CustomHeartbeat
 import timber.multiplatform.log.Timber
 import java.net.SocketTimeoutException
 import java.util.*
 import java.util.concurrent.*
-import java.util.concurrent.locks.ReentrantLock
 
-class WebSocketEngine(private val builder: Builder) : IEngine {
+class OkhttpIEngine(private val builder: Builder) : IEngine {
 
     /**
      * Ok http client
@@ -67,7 +68,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
     }
     var engineState = IEngineState.ENGINE_CLOSED // 当前连接状态
     override fun engineOn(key: String) {
-        engineOn(Request.Builder().url(key).build())
+        engineOn(Request.Builder().url(key).build(),null)
     }
 
     /**
@@ -88,7 +89,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
 
     // 连接操作同步锁
     private val connectLock = Any()
-    override fun engineOn(request: Request, engineActionListener: IEngineActionListener?) {
+    fun engineOn(request: Request, engineActionListener: IEngineActionListener?) {
         Timber.d("engineOn 111")
         check(!connecting) {
             throw IllegalStateException("正在连接，请稍后重试")
@@ -143,7 +144,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         }
     }
 
-    private fun getIEngine(): WebSocketEngine {
+    private fun getIEngine(): OkhttpIEngine {
         return this
     }
 
@@ -169,8 +170,8 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         return engineState
     }
 
-    override fun send(byteString: ByteString):Boolean {
-        return webSocket?.send(byteString)?:false
+    override fun send(byteArray: ByteArray):Boolean {
+        return webSocket?.send(byteArray.toByteString())?:false
     }
 
     override fun send(text: String):Boolean {
@@ -223,14 +224,14 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
     private val autoReconnect = AutoReconnect()
 
     private class AutoReconnect() {
-        internal lateinit var webSocketEngine: WebSocketEngine
+        internal lateinit var okhttpIEngine: OkhttpIEngine
         private var reconnectTimer: ScheduledExecutorService? = null
         private var reconnectFuture: ScheduledFuture<*>? = null
         internal var reconnectDelay = 1000L // Reconnect delay, starts at 1
         private var reconnecting = false;
-        fun initAutoReconnect(engine: WebSocketEngine, name: String) {
+        fun initAutoReconnect(engine: OkhttpIEngine, name: String) {
             Timber.d("initAutoReconnect.")
-            webSocketEngine = engine
+            okhttpIEngine = engine
             reconnectTimer = ScheduledThreadPoolExecutor(
                 1,
                 okhttp3.internal.threadFactory(name, false)
@@ -238,8 +239,8 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         }
 
         fun startReconnectCycle() {
-            Timber.d("startReconnectCycle $reconnecting $reconnectDelay $webSocketEngine")
-            if (webSocketEngine.connecting) {
+            Timber.d("startReconnectCycle $reconnecting $reconnectDelay $okhttpIEngine")
+            if (okhttpIEngine.connecting) {
                 return
             }
             if (reconnecting) {
@@ -279,8 +280,8 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
     ) : TimerTask() {
         override fun run() {
             Timber.i("AutoReconnect ReconnectTask run 000")
-            autoReconnect.webSocketEngine
-                .connect(autoReconnect.webSocketEngine.webSocket?.request()!!, object : IEngineActionListener {
+            autoReconnect.okhttpIEngine
+                .connect(autoReconnect.okhttpIEngine.webSocket?.request()!!, object : IEngineActionListener {
                     override fun onSuccess(iEngine: IEngine) {
                         Timber.i("AutoReconnect ReconnectTask onSuccess")
                         autoReconnect.stopReconnectCycle()
@@ -288,7 +289,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
 
                     override fun onFailure(iEngine: IEngine, t: Throwable) {
                         Timber.i("AutoReconnect ReconnectTask onFailure")
-                        if (autoReconnect.reconnectDelay < autoReconnect.webSocketEngine.maxReconnectDelay) {
+                        if (autoReconnect.reconnectDelay < autoReconnect.okhttpIEngine.maxReconnectDelay) {
                             autoReconnect.reconnectDelay *= 2
                         }
                         autoReconnect.rescheduleReconnectCycle(autoReconnect.reconnectDelay)
@@ -306,7 +307,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
      */
     private val heartbeat = Heartbeat()
 
-    private class Heartbeat : V2IMCSocketListener<IEngine> {
+    private class Heartbeat : V2IMCSocketListener {
         var heartbeatInterval = 5 * 1000L
         // 心跳响应
         private var awaitingPong = false
@@ -316,18 +317,18 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         private lateinit var scheduledExecutorService : ExecutorService
         // 心跳所在线程
         private var currentScheduledFuture: Future<*>? = null
-        private lateinit var webSocketEngine: WebSocketEngine
+        private lateinit var okhttpIEngine: OkhttpIEngine
         private val sync = Object()
         private lateinit var customHeartbeat : CustomHeartbeat
         private var isActive = false
 
-        fun initHeartbeat(engine: WebSocketEngine,heartbeat : CustomHeartbeat, name: String) {
+        fun initHeartbeat(engine: OkhttpIEngine, heartbeat : CustomHeartbeat, name: String) {
             Timber.d("Heartbeat 初始化心跳机制")
             customHeartbeat = heartbeat
-            webSocketEngine = engine
+            okhttpIEngine = engine
             heartbeatInterval = engine.builder.minHeartbeatInterval.toLong()
-            webSocketEngine.removeIMCSocketListener(this)
-            webSocketEngine.addIMCSocketListener(9, this)
+            okhttpIEngine.removeIMCSocketListener(this)
+            okhttpIEngine.addIMCSocketListener(9, this)
             scheduledExecutorService = Executors.newSingleThreadExecutor()
         }
 
@@ -356,7 +357,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
             return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,text))
         }
 
-        override fun onMessage(iEngine: IEngine, bytes: ByteString): Boolean {
+        override fun onMessage(iEngine: IEngine, bytes: ByteArray): Boolean {
             return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,bytes))
         }
 
@@ -398,9 +399,9 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
                     Timber.d("Heartbeat isActive $isActive 发送心跳00 $auxiliaryHeartbeat")
                     awaitingPong = true
                     if (customHeartbeat.byteOrString()){
-                        webSocketEngine.send(customHeartbeat.byteHeartbeat())
+                        okhttpIEngine.send(customHeartbeat.byteHeartbeat())
                     }else{
-                        webSocketEngine.send(customHeartbeat.stringHeartbeat())
+                        okhttpIEngine.send(customHeartbeat.stringHeartbeat())
                     }
                     try {
                         synchronized(sync){
@@ -415,7 +416,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
                     Timber.d("Heartbeat 发送心跳11 $auxiliaryHeartbeat")
                 }
                 Timber.d("Heartbeat 心跳无回执 $awaitingPong")
-                webSocketEngine.failWebSocket(
+                okhttpIEngine.failWebSocket(
                     SocketTimeoutException(
                         "sent ping but didn't receive pong within " +
                                 "${heartbeatInterval}ms"
@@ -432,7 +433,7 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
     /***
      * 监听相关
      */
-    private val imcListenerManager = IMCListenerManager<IEngine>()
+    private val imcListenerManager = IMCListenerManager()
     private var imcStatusListener: IMCStatusListener? = null
     override fun addIMCListener(imcListener: V2IMCListener) {
         imcListenerManager.addIMCListener(imcListener)
@@ -442,11 +443,11 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
         imcListenerManager.removeIMCListener(imcListener)
     }
 
-    override fun addIMCSocketListener(level: Int, imcSocketListener: V2IMCSocketListener<IEngine>) {
+    override fun addIMCSocketListener(level: Int, imcSocketListener: V2IMCSocketListener) {
         imcListenerManager.addIMCSocketListener(level, imcSocketListener)
     }
 
-    override fun removeIMCSocketListener(imcSocketListener: V2IMCSocketListener<IEngine>) {
+    override fun removeIMCSocketListener(imcSocketListener: V2IMCSocketListener) {
         imcListenerManager.removeIMCSocketListener(imcSocketListener)
     }
 
@@ -491,8 +492,8 @@ class WebSocketEngine(private val builder: Builder) : IEngine {
             maxReconnectDelay = checkDuration("maxReconnectDelay", delay, unit)
         }
 
-        fun build(): WebSocketEngine {
-            return WebSocketEngine(this)
+        fun build(): OkhttpIEngine {
+            return OkhttpIEngine(this)
         }
     }
 }

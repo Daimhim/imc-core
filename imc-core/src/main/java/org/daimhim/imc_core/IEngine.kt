@@ -1,8 +1,5 @@
 package org.daimhim.imc_core
 
-import okhttp3.Request
-import okio.ByteString
-
 interface IEngine {
     /**
      * Start engine
@@ -11,7 +8,7 @@ interface IEngine {
      * @return
      */
     fun engineOn(key:String)
-    fun engineOn(request: Request,engineActionListener: IEngineActionListener? = null)
+
     /**
      * 熄火
      */
@@ -23,7 +20,7 @@ interface IEngine {
     /**
      * 消息发送
      */
-    fun send(byteString: ByteString):Boolean
+    fun send(byteArray: ByteArray):Boolean
     /**
      * 消息发送
      */
@@ -44,13 +41,13 @@ interface IEngine {
      *
      * @param imcSocketListener 待添加的消息接收拦截器
      */
-    fun addIMCSocketListener(level:Int = IMCListenerManager.DEFAULT_LEVEL, imcSocketListener: V2IMCSocketListener<IEngine>)
+    fun addIMCSocketListener(level:Int = IMCListenerManager.DEFAULT_LEVEL, imcSocketListener: V2IMCSocketListener)
     /**
      * Remove i m c socket listener
      *
      * @param imcSocketListener 待移除的消息接收拦截器
      */
-    fun removeIMCSocketListener(imcSocketListener: V2IMCSocketListener<IEngine>)
+    fun removeIMCSocketListener(imcSocketListener: V2IMCSocketListener)
 
     fun setIMCStatusListener(listener: IMCStatusListener?)
 

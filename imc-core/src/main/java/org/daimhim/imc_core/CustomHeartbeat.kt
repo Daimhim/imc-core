@@ -1,12 +1,12 @@
 package org.daimhim.imc_core
 
-import okio.ByteString
+
 
 interface CustomHeartbeat {
-    fun isHeartbeat(iEngine: IEngine, bytes: ByteString):Boolean
+    fun isHeartbeat(iEngine: IEngine, bytes: ByteArray):Boolean
     fun isHeartbeat(iEngine: IEngine, text: String): Boolean
 
-    fun byteHeartbeat():ByteString
+    fun byteHeartbeat():ByteArray
     fun stringHeartbeat():String
 
     fun byteOrString():Boolean

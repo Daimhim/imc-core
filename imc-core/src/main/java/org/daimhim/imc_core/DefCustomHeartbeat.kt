@@ -1,21 +1,20 @@
 package org.daimhim.imc_core
 
-import okio.ByteString
 import timber.multiplatform.log.Timber
 
 class DefCustomHeartbeat : CustomHeartbeat {
-    override fun isHeartbeat(iEngine: IEngine, bytes: ByteString): Boolean {
+    override fun isHeartbeat(iEngine: IEngine, bytes: ByteArray): Boolean {
         Timber.i("isHeartbeat ByteString")
-        return ByteString.EMPTY == bytes
+        return bytes.isEmpty()
     }
 
     override fun isHeartbeat(iEngine: IEngine, text: String): Boolean {
         return false
     }
 
-    override fun byteHeartbeat(): ByteString {
+    override fun byteHeartbeat(): ByteArray {
         Timber.i("byteHeartbeat ByteString")
-        return ByteString.EMPTY
+        return byteArrayOf()
     }
 
     override fun stringHeartbeat(): String {

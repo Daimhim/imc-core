@@ -2,10 +2,9 @@ package org.daimhim.imc_core.demo
 
 import okhttp3.OkHttpClient
 import org.daimhim.imc_core.IMCStatusListener
-import org.daimhim.imc_core.WebSocketEngine
+import org.daimhim.imc_core.OkhttpIEngine
 import org.junit.Test
 
-import org.junit.Assert.*
 import timber.multiplatform.log.DebugTree
 import timber.multiplatform.log.Timber
 
@@ -15,7 +14,7 @@ import timber.multiplatform.log.Timber
  * See [testing documentation](http://d.android.com/tools/testing).
  */
 class ExampleUnitTest {
-    private lateinit var webSocketEngine : WebSocketEngine
+    private lateinit var okhttpIEngine : OkhttpIEngine
     private val cmd_send = "send:"
     private val cmd_close = "close()"
     private val cmd_connect = "connect()"
@@ -24,7 +23,7 @@ class ExampleUnitTest {
     @Test
     fun addition_isCorrect() {
         Timber.plant(DebugTree())
-        webSocketEngine = WebSocketEngine
+        okhttpIEngine = OkhttpIEngine
             .Builder()
             .okHttpClient(
                 OkHttpClient
@@ -33,7 +32,7 @@ class ExampleUnitTest {
                 .build())
             .build()
         var preprocessedCharacters: String
-        webSocketEngine.setIMCStatusListener(object : IMCStatusListener {
+        okhttpIEngine.setIMCStatusListener(object : IMCStatusListener {
             override fun connectionClosed() {
                 Timber.i("connectionClosed")
             }
@@ -52,15 +51,15 @@ class ExampleUnitTest {
             val input = readlnOrNull()
             when {
                 input == cmd_connect -> {
-                    webSocketEngine.engineOn("http://127.0.0.1:3390/v1")
+                    okhttpIEngine.engineOn("http://127.0.0.1:3390/v1")
                     Timber.i("engineOn()")
                 }
                 input == cmd_close -> {
-                    webSocketEngine.engineOff()
+                    okhttpIEngine.engineOff()
                     Timber.i("engineOff()")
                 }
                 input == cmd_state -> {
-                    Timber.i("engineState:${webSocketEngine.engineState}")
+                    Timber.i("engineState:${okhttpIEngine.engineState}")
                 }
                 input == cmd_exit -> {
                     Timber.i("exit()")
@@ -71,7 +70,7 @@ class ExampleUnitTest {
                 }
                 input.startsWith(cmd_send) -> {
                     preprocessedCharacters = input.substring(cmd_send.length)
-                    webSocketEngine.send(preprocessedCharacters)
+                    okhttpIEngine.send(preprocessedCharacters)
                     Timber.i("$preprocessedCharacters")
                 }
                 else -> {
