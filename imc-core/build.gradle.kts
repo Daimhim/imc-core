@@ -14,7 +14,7 @@ java {
 
 dependencies {
     compileOnly("com.squareup.okhttp3:okhttp:4.9.0")
-    compileOnly("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.5")
+    compileOnly("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.6.2")
 }
 
 afterEvaluate{

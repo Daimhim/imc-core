@@ -38,7 +38,7 @@ dependencies {
     implementation(project(":imc-core"))
     implementation("com.github.Daimhim:SimpleAdapter:1.1.0")
     implementation("com.squareup.okhttp3:okhttp:4.9.3")
-    implementation("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.5")
+    implementation("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.6.2")
     implementation("androidx.core:core-ktx:1.7.0")
     implementation("androidx.appcompat:appcompat:1.4.1")
     implementation("com.google.android.material:material:1.5.0")
