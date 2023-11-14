@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "org.daimhim.imc.core"
-version = "3.0.2-SNAPSHOT"
+version = "3.0.5-SNAPSHOT"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8

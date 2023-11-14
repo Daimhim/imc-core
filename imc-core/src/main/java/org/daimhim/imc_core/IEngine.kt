@@ -58,4 +58,9 @@ interface IEngine {
      */
     fun onChangeMode(mode:Int)
     fun onNetworkChange(networkState:Int)
+
+    /**
+     * 主动触发重连
+     */
+    fun makeConnection()
 }

@@ -22,7 +22,7 @@ class MainViewModel : ViewModel() {
     val onMessage : SharedFlow<MainItem> =_onMessage
 
 //    private val BASE_URL = ""
-    private val BASE_URL = ""
+    private val BASE_URL = "http://3d478fb5.r10.cpolar.top"
 //    private val BASE_URL = ""
 
 
@@ -72,7 +72,7 @@ class MainViewModel : ViewModel() {
                         }.start()
                 }
 
-                override fun onMessage(byteArray: ByteString) {
+                override fun onMessage(byteArray: ByteArray) {
                     Timber.i("onMessage:收到新消息11  ${byteArray.size} ${System.currentTimeMillis()}")
                     viewModelScope
                         .launch {
@@ -82,6 +82,7 @@ class MainViewModel : ViewModel() {
 //                            _onMessage.emit(MainItem("Ta",1,parseDelimitedFrom.content))
                         }.start()
                 }
+
             })
     }
 
