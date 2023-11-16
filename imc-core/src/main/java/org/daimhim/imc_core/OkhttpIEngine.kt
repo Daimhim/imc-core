@@ -57,10 +57,12 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            Timber.i("onMessage text:${text}")
             imcListenerManager.onMessage(getIEngine(), text)
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            Timber.i("onMessage bytes:${bytes.size}")
             imcListenerManager.onMessage(getIEngine(), bytes)
         }
     }
@@ -182,17 +184,22 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
      * @param foreground
      */
     override fun onChangeMode(mode: Int) {
-        Timber.i("Heartbeat setForeground foreground ${mode}")
         if (!connected) {
             return
         }
-        // 非强制实现
-        heartbeat.heartbeatInterval = if (mode == 0) {
-            builder.minHeartbeatInterval
-        } else {
-            builder.maxHeartbeatInterval
-        }.toLong()
-        heartbeat.startHeartbeat()
+        okHttpClient
+            .dispatcher
+            .executorService
+            .submit {
+                Timber.i("Heartbeat setForeground foreground ${mode}")
+                // 非强制实现
+                heartbeat.heartbeatInterval = if (mode == 0) {
+                    builder.minHeartbeatInterval
+                } else {
+                    builder.maxHeartbeatInterval
+                }.toLong()
+                heartbeat.startHeartbeat()
+            }
     }
 
     /**
@@ -202,24 +209,40 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
      * @param networkState
      */
     override fun onNetworkChange(networkState: Int) {
+        Timber.i("autoReconnect onNetworkChange ${networkState}")
         // 非强制实现
         if (!connected) {
             return
         }
-        autoReconnect.resetStartReconnectCycle()
+        okHttpClient
+            .dispatcher
+            .executorService
+            .submit {
+                autoReconnect.resetStartReconnectCycle()
+            }
     }
 
     override fun makeConnection() {
+        Timber.i("autoReconnect makeConnection")
         // 非强制实现
         if (!connected) {
             return
         }
-        autoReconnect.stopReconnectCycle()
-        autoReconnect.startReconnectCycle()
+        okHttpClient
+            .dispatcher
+            .executorService
+            .submit {
+                autoReconnect.resetStartReconnectCycle()
+            }
     }
 
     internal fun failWebSocket(e: Exception, response: Response?){
-        webSocketListenerImpl.onFailure(webSocket!!,e,response)
+        okHttpClient
+            .dispatcher
+            .executorService
+            .submit {
+                webSocketListenerImpl.onFailure(webSocket!!,e,response)
+            }
     }
 
     /**
@@ -234,6 +257,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         private val initReconnectDelay = 1000L
         internal var reconnectDelay = initReconnectDelay // Reconnect delay, starts at 1
         private val syncAutoReconnect = Object()
+        //内部记录 是否正在连接
         private var isConnecting = false
         // 组ID
         private val makeGroupId = "AutoReconnect:Group:${hashCode()}"
@@ -269,9 +293,9 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         fun startReconnectCycle() {
-            Timber.i("startReconnectCycle 开始抢救")
+            Timber.i("startReconnectCycle 开始抢救 ${okhttpIEngine.engineState}")
             // 连接正常
-            if (okhttpIEngine.connecting) {
+            if (okhttpIEngine.engineState == IEngineState.ENGINE_OPEN){
                 return
             }
             if (isConnecting){
@@ -287,25 +311,17 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             }
         }
         fun resetStartReconnectCycle(){
-            Timber.i("resetStartReconnectCycle 重置开始抢救")
-            // 连接正常
-            if (!isConnecting){
-                startReconnectCycle()
-                return
-            }
+            Timber.i("resetStartReconnectCycle 重置开始抢救 ${okhttpIEngine.engineState} ${isConnecting}")
             synchronized(syncAutoReconnect){
-                rapidResponseForce.unRegister(makeTimekeepingId)
-                rapidResponseForce.unRegister(makeTimeoutId)
+                Timber.i("resetStartReconnectCycle 重置开始抢救 111")
                 reconnectDelay = initReconnectDelay // Reset Delay Timer
-                // 直接连接
-                rapidResponseForce.register(makeTimeoutId,makeTimeoutId)
-                connect()
+                reconnect()
             }
         }
 
         private fun reconnect(){
-            // 连接正常
-            if (okhttpIEngine.connecting) {
+            if (okhttpIEngine.engineState == IEngineState.ENGINE_OPEN){
+                stopReconnectCycle()
                 return
             }
             synchronized(syncAutoReconnect){
@@ -339,6 +355,10 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             }
         }
         private fun connect() {
+            if (okhttpIEngine.connecting){
+                // 正在连接中
+                return
+            }
             if (okhttpIEngine.webSocket == null){
                 Timber.i("connect 抢救失败")
                 failure(okhttpIEngine, IllegalStateException("webSocket == null"))
@@ -371,7 +391,6 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         private lateinit var rapidResponseForce : RapidResponseForce<String>
         var heartbeatInterval = 5 * 1000L
         private lateinit var okhttpIEngine: OkhttpIEngine
-        private val syncHeartbeat = Object()
         private lateinit var customHeartbeat : CustomHeartbeat
         // 组ID
         private val makeGroupId = "Heartbeat:Group:${hashCode()}"
@@ -391,16 +410,14 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             )
             rapidResponseForce.timeoutCallback {list->
                 Timber.i("RapidResponseForce Heartbeat ${list?.size}")
-                synchronized(syncHeartbeat) {
-                    list?.forEach {
-                        when (it) {
-                            makeTimeoutId -> {
-                                failure(okhttpIEngine, TimeoutException("连接超时"))
-                            }
+                list?.forEach {
+                    when (it) {
+                        makeTimeoutId -> {
+                            failure(okhttpIEngine, TimeoutException("连接超时"))
+                        }
 
-                            makeTimekeepingId -> {
-                                startHeartbeat()
-                            }
+                        makeTimekeepingId -> {
+                            startHeartbeat()
                         }
                     }
                 }
@@ -409,40 +426,38 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
 
         fun startHeartbeat() {
             Timber.i("Heartbeat 启动心跳")
-            synchronized(syncHeartbeat){
-                rapidResponseForce.unRegister(makeTimekeepingId)
-                rapidResponseForce.unRegister(makeTimeoutId)
-                // 准备接收，超时监听
-                rapidResponseForce.register(makeTimeoutId,makeTimeoutId)
-                sendHeartbeat()
-            }
+            rapidResponseForce.unRegister(makeTimeoutId)
+            rapidResponseForce.unRegister(makeTimekeepingId)
+            // 准备接收，超时监听
+            rapidResponseForce.register(makeTimeoutId,makeTimeoutId)
+            sendHeartbeat()
         }
 
         fun stopHeartbeat() {
             Timber.i("Heartbeat 停止心跳")
-            synchronized(syncHeartbeat){
-                rapidResponseForce.unRegister(makeTimekeepingId)
-                rapidResponseForce.unRegister(makeTimeoutId)
-            }
+            rapidResponseForce.unRegister(makeTimekeepingId)
+            rapidResponseForce.unRegister(makeTimeoutId)
         }
 
         private fun rescheduleHeartbeat(){
-            synchronized(syncHeartbeat){
-                rapidResponseForce.unRegister(makeTimekeepingId)
-                rapidResponseForce.unRegister(makeTimeoutId)
-                // 准备接收，超时监听
-                rapidResponseForce.register(makeTimekeepingId,makeTimekeepingId,heartbeatInterval)
-                Timber.i("Heartbeat 延时等待下一次：${heartbeatInterval}")
-            }
+            rapidResponseForce.unRegister(makeTimekeepingId)
+            rapidResponseForce.unRegister(makeTimeoutId)
+            // 准备接收，超时监听
+            rapidResponseForce.register(makeTimekeepingId,makeTimekeepingId,heartbeatInterval)
+            Timber.i("Heartbeat 延时等待下一次：${heartbeatInterval}")
         }
 
         private fun sendHeartbeat(){
             Timber.i("Heartbeat 发送心跳 ")
-            if (customHeartbeat.byteOrString()){
+            val b = if (customHeartbeat.byteOrString()) {
+                Timber.i("sendHeartbeat byte")
                 okhttpIEngine.send(customHeartbeat.byteHeartbeat())
-            }else{
-                okhttpIEngine.send(customHeartbeat.stringHeartbeat())
+            } else {
+                okhttpIEngine.send(customHeartbeat.stringHeartbeat().also {
+                    Timber.i("sendHeartbeat ${it}")
+                })
             }
+            Timber.i("Heartbeat 发送心跳结果：$b ")
         }
         private fun failure(iEngine: IEngine, t: Throwable){
             Timber.i("Heartbeat 心跳无回执")

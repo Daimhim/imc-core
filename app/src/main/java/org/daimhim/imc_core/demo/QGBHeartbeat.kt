@@ -21,6 +21,6 @@ class QGBHeartbeat : CustomHeartbeat {
     }
 
     override fun stringHeartbeat(): String {
-        return "{\"fromAccount\":{\"accountId\":\"202206211949282\"},\"toAccount\":{\"accountId\":\"202206211949282\"},\"cmdType\":\"HEART_BEAT\"}"
+        return "{\"fromAccount\":{\"accountId\":\"202012221018295\"},\"toAccount\":{\"accountId\":\"202012221018295\"},\"cmdType\":\"HEART_BEAT\"}"
     }
 }
