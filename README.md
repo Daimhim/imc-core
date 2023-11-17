@@ -26,7 +26,7 @@ dependencies {
 + send(text: String):Boolean 发送文本消息
 + addIMCListener(imcListener: V2IMCListener) // 添加新消息监听
 + removeIMCListener(imcListener: V2IMCListener) 移除新消息监听
-+ addIMCSocketListener(level:Int, imcSocketListener: V2IMCSocketListener) 添加新消息拦截器，level代表优先级。默认15
++ addIMCSocketListener(level:Int, imcSocketListener: V2IMCSocketListener    ) 添加新消息拦截器，level代表优先级。默认15
 + removeIMCSocketListener(imcSocketListener: V2IMCSocketListener) 移除新消息拦截器
 + setIMCStatusListener(listener: IMCStatusListener?)  监听socket连接状态
 + onChangeMode(mode:Int) 切换心跳频率 0=5秒  1=45秒
