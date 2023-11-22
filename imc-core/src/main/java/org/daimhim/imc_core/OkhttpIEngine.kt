@@ -409,7 +409,6 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
                 groupId = makeGroupId,
             )
             rapidResponseForce.timeoutCallback {list->
-                Timber.i("RapidResponseForce Heartbeat ${list?.size}")
                 list?.forEach {
                     when (it) {
                         makeTimeoutId -> {

@@ -9,7 +9,7 @@ import java.util.concurrent.*
  */
 class RapidResponseForce<T : Any>(
     private val MAX_TIMEOUT_TIME: Long = 5 * 1000,
-    private val groupId: String = System.nanoTime().toString(),
+    private val groupId: String = makeOnlyId(),
 ) {
     companion object {
         private val MAXIMUM_IDLE_TIME = 25 * 1000L
@@ -35,27 +35,36 @@ class RapidResponseForce<T : Any>(
                 syncRRF.notify()
             }
         }
+        @Synchronized
+        private fun makeOnlyId():String{
+            return System.currentTimeMillis().toString()
+        }
     }
 
+    @Synchronized
     fun register(id: String, t: T) {
         register(id, t,MAX_TIMEOUT_TIME)
     }
 
+    @Synchronized
     fun register(id: String, t: T, timeOut: Long) {
-        Timber.i("register id:$id t:$t timeOut:$timeOut ${fuel.size}")
+        if (id.contains("Timekeeping")){
+            Timber.i("register 定时:${timeOut}ms ${groupId} id:$id t:$t timeOut:$timeOut ${fuel.size}")
+        }else{
+            Timber.i("register 超时:${timeOut}ms ${groupId} id:$id t:$t timeOut:$timeOut ${fuel.size}")
+        }
         fuel.offer(object : Runnable{
             override fun run() {
                 val mutableMap = waitingReaction[groupId] ?: mutableMapOf()
                 mutableMap.put(id, WrapOrderState(groupId = groupId, t = t, timeOut = timeOut))
                 waitingReaction[groupId] = mutableMap
-                Timber.i("---- register:${waitingReaction.hashCode()} ${waitingReaction.size}")
             }
         })
         startTrainBoiler()
     }
-
+    @Synchronized
     fun unRegister(id: String,call:((T?)->Unit)? = null) {
-        Timber.i("unRegister id:$id ${fuel.size}")
+        Timber.i("unRegister ${groupId} id:$id ${fuel.size}")
         fuel.offer(object : Runnable{
             override fun run() {
                 val remove = waitingReaction[groupId]?.remove(id)
@@ -70,8 +79,9 @@ class RapidResponseForce<T : Any>(
     
     fun isRegister(id: String):Boolean = waitingReaction[groupId]?.containsKey(id)?:false
 
+    @Synchronized
     fun timeoutCallback(call: ((List<T>?) -> Unit)?) {
-        Timber.i("timeoutCallback ${fuel.size}")
+        Timber.i("timeoutCallback ${groupId} ${fuel.size}")
         fuel.offer(object : Runnable{
             override fun run() {
                 if (call == null) {
@@ -127,7 +137,6 @@ class RapidResponseForce<T : Any>(
                 while (iterator.hasNext()) {
                     next = iterator.next()
                     currentItemCumulativeTime = next.value.integrationTime + lastInterval
-                    Timber.i("-----组ID ${groupNext.key}消息ID：${next.key} 累计时间：${currentItemCumulativeTime} ${lastInterval}")
                     if (currentItemCumulativeTime >= next.value.timeOut) { //超时
                         wrapOrderStates = timeoutMap[next.value.groupId] ?: mutableListOf()
                         wrapOrderStates.add(next.value)
@@ -146,10 +155,8 @@ class RapidResponseForce<T : Any>(
             }
             //超时回调
             timeoutMap.forEach { entry ->
-                Timber.i("----- 超时回调 ${entry.key} ${entry.value.size}")
                 timeoutCallbackMap[entry.key]?.invoke(entry.value.map { it.t })
             }
-            Timber.i("正在执行：${waitingReaction.hashCode()}")
             // 记录本次时间
             recently = System.currentTimeMillis()
             //等待最近的那个
@@ -167,24 +174,20 @@ class RapidResponseForce<T : Any>(
                 if (wait <= 0L){
                     wait = MAXIMUM_IDLE_TIME
                 }
-                Timber.i("开始等待：$wait ${Thread.currentThread().name}")
                 coolingTime = System.currentTimeMillis()
                 take = fuel.poll(wait,TimeUnit.MILLISECONDS)
                 coolingTime = System.currentTimeMillis() - coolingTime
                 if (coolingTime < MAXIMUM_IDLE_TIME){
                     isBurial = false
                 }
-                Timber.i("等待结束，实际等待时间：$coolingTime ${Thread.currentThread().name}")
-                Timber.i("取出fuel:${fuel.size} ${fuel.map { it.hashCode() }} ${Thread.currentThread().name}")
                 take?.run()
                 if (isAuxiliaryFuel()){
                     isBurial = false
                     continue
                 }
                 wait = advancedFuel.call()
-                Timber.i("最接近的定时：${wait}")
-                Timber.i("超时任务：${waitingReaction.size} ${waitingReaction.hashCode()}")
                 if (isSufficientFuel()){
+                    isBurial = false
                     continue
                 }
                 advancedFuel.recently = -1L
@@ -197,7 +200,6 @@ class RapidResponseForce<T : Any>(
                     break
                 }
             }
-            Timber.i("reviewThread = null ${Thread.currentThread().name}")
             reviewThread = null
         }
 
