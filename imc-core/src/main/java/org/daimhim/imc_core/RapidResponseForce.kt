@@ -6,6 +6,9 @@ import java.util.concurrent.*
 
 /**
  * 快速超时响应队列
+ * 实现不同分组、不同任务、不同超时，同一个核心线程的计时机制
+ * @param MAX_TIMEOUT_TIME 分组内 默认统一的超时时间
+ * @param groupId 分组ID，默认时间戳
  */
 class RapidResponseForce<T : Any>(
     private val MAX_TIMEOUT_TIME: Long = 5 * 1000,
@@ -14,14 +17,27 @@ class RapidResponseForce<T : Any>(
     companion object {
         private val MAXIMUM_IDLE_TIME = 25 * 1000L
         private var reviewThread: Thread? = null
+
+        /**
+         * 核心任务队列，负责对数据集的增删改查具体执行
+         */
         private val fuel  = LinkedBlockingQueue<Runnable>()
         // 等待队列
         private val waitingReaction = mutableMapOf<String, MutableMap<String, WrapOrderState<*>>>()
 
         //超时回调队列
         private val timeoutCallbackMap = mutableMapOf<String, ((List<*>) -> Unit)>()
+        // 用来检测超时数据
         private val advancedFuel = AdvancedFuelRunnable()
+
+        /**
+         * 核心线程，主要用来遍历执行队列
+         */
         private val powerTrainRunnable = PowerTrainRunnable()
+
+        /**
+         * 锁定 第三方线程调用并发
+         */
         private val syncRRF = Object()
 
         @Synchronized
@@ -35,9 +51,15 @@ class RapidResponseForce<T : Any>(
                 syncRRF.notify()
             }
         }
+        private var lastOnlyId : Long ? = null
         @Synchronized
         private fun makeOnlyId():String{
-            return System.currentTimeMillis().toString()
+            var nowLastOnlyId = System.currentTimeMillis()
+            if (lastOnlyId == nowLastOnlyId) {
+                nowLastOnlyId += 1
+            }
+            lastOnlyId = nowLastOnlyId
+            return lastOnlyId.toString()
         }
     }
 
@@ -46,6 +68,12 @@ class RapidResponseForce<T : Any>(
         register(id, t,MAX_TIMEOUT_TIME)
     }
 
+    /**
+     * 注册任务
+     * @param id 任务ID
+     * @param t 任务数据
+     * @param timeOut 超时时间
+     */
     @Synchronized
     fun register(id: String, t: T, timeOut: Long) {
         if (id.contains("Timekeeping")){
@@ -62,6 +90,12 @@ class RapidResponseForce<T : Any>(
         })
         startTrainBoiler()
     }
+
+    /**
+     * 解除注册
+     * @param id 任务ID
+     * @param call 解除完成的回调
+     */
     @Synchronized
     fun unRegister(id: String,call:((T?)->Unit)? = null) {
         Timber.i("unRegister ${groupId} id:$id ${fuel.size}")
@@ -76,9 +110,17 @@ class RapidResponseForce<T : Any>(
         })
         startTrainBoiler()
     }
-    
+
+    /**
+     * 任务是否已经注册，在指定分组内
+     * @param id 任务ID
+     */
     fun isRegister(id: String):Boolean = waitingReaction[groupId]?.containsKey(id)?:false
 
+    /**
+     * 以分组的形式 监听超时回调
+     * @param call 回调
+     */
     @Synchronized
     fun timeoutCallback(call: ((List<T>?) -> Unit)?) {
         Timber.i("timeoutCallback ${groupId} ${fuel.size}")
@@ -96,7 +138,7 @@ class RapidResponseForce<T : Any>(
         startTrainBoiler()
     }
 
-    class WrapOrderState<T>(
+    private class WrapOrderState<T>(
         val groupId: String,
         val t: T,
         val timeOut: Long = 0L,
