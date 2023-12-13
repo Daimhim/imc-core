@@ -4,7 +4,6 @@ import okhttp3.*
 import okhttp3.internal.checkDuration
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
-import timber.multiplatform.log.Timber
 import java.net.SocketTimeoutException
 import java.util.*
 import java.util.concurrent.*
@@ -18,24 +17,25 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
     private val okHttpClient: OkHttpClient = builder.okHttpClient()
     private val maxReconnectDelay = builder.maxReconnectDelay
 
+
     /**
      * Web socket 长连接
      */
     internal var webSocket: WebSocket? = null
     private val webSocketListenerImpl = object : WebSocketListener() {
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            Timber.i("onClosed code$code reason$reason")
+            IMCLog.i("onClosed code$code reason$reason")
             engineState = IEngineState.ENGINE_CLOSED
             heartbeat.stopHeartbeat()
             imcStatusListener?.connectionClosed()
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            Timber.i("onClosing code$code reason$reason")
+            IMCLog.i("onClosing code$code reason$reason")
         }
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            Timber.i("onOpen response${response.message}")
+            IMCLog.i("onOpen response${response.message}")
             iEngineActionListener?.onSuccess(getIEngine())
             engineState = IEngineState.ENGINE_OPEN
             heartbeat.startHeartbeat()
@@ -43,7 +43,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            Timber.i(t, "onFailure response ${connected} ${response?.message}")
+            IMCLog.i(t, "onFailure response ${connected} ${response?.message}")
             if (!connected) {
                 onClosed(webSocket, IEngineState.ENGINE_CLOSED_FAILED, response?.message ?: "")
                 return
@@ -57,12 +57,12 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            Timber.i("onMessage text:${text}")
+            IMCLog.i("onMessage text:${text}")
             imcListenerManager.onMessage(getIEngine(), text)
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            Timber.i("onMessage bytes:${bytes.size}")
+            IMCLog.i("onMessage bytes:${bytes.size}")
             imcListenerManager.onMessage(getIEngine(), bytes)
         }
     }
@@ -90,7 +90,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
     // 连接操作同步锁
     private val connectLock = Any()
     fun engineOn(request: Request, engineActionListener: IEngineActionListener?) {
-        Timber.i("engineOn 111")
+        IMCLog.i("engineOn 111")
         check(!connecting) {
             throw IllegalStateException("正在连接，请稍后重试")
         }
@@ -100,7 +100,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         check(!connected) {
             throw IllegalStateException("已经连接了，请勿重复连接")
         }
-        Timber.i("engineOn 222")
+        IMCLog.i("engineOn 222")
         // 初始化心跳
         val name = "WebSocketEngine ${request.url.redact()}"
         heartbeat.initHeartbeat(getIEngine(),builder.customHeartbeat(), name)
@@ -109,7 +109,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
     }
 
     private fun connect(request: Request, engineActionListener: IEngineActionListener?) {
-        Timber.i("engineOn 333")
+        IMCLog.i("engineOn 333")
         synchronized(connectLock) {
             connecting = true
             connected = true
@@ -118,7 +118,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             // 连接回调
             iEngineActionListener = object : IEngineActionListener {
                 override fun onSuccess(iEngine: IEngine) {
-                    Timber.i("connect onSuccess")
+                    IMCLog.i("connect onSuccess")
                     engineActionListener?.onSuccess(iEngine)
                     iEngineActionListener = null
                     synchronized(connectLock) {
@@ -127,7 +127,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
                 }
 
                 override fun onFailure(iEngine: IEngine, t: Throwable) {
-                    Timber.i("connect onFailure")
+                    IMCLog.i("connect onFailure")
                     engineActionListener?.onFailure(iEngine, t)
                     iEngineActionListener = null
                     synchronized(connectLock) {
@@ -152,7 +152,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             connected = false
         }
         val close = webSocket?.close(IEngineState.ENGINE_CLOSED, "engineOff") ?: false
-        Timber.i("engineOff $close")
+        IMCLog.i("engineOff $close")
         if (webSocket != null && !close) {
             webSocket?.cancel()
         }
@@ -191,7 +191,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             .dispatcher
             .executorService
             .submit {
-                Timber.i("Heartbeat setForeground foreground ${mode}")
+                IMCLog.i("Heartbeat setForeground foreground ${mode}")
                 // 非强制实现
                 heartbeat.heartbeatInterval = if (mode == 0) {
                     builder.minHeartbeatInterval
@@ -209,7 +209,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
      * @param networkState
      */
     override fun onNetworkChange(networkState: Int) {
-        Timber.i("autoReconnect onNetworkChange ${networkState}")
+        IMCLog.i("autoReconnect onNetworkChange ${networkState}")
         // 非强制实现
         if (!connected) {
             return
@@ -223,7 +223,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
     }
 
     override fun makeConnection() {
-        Timber.i("autoReconnect makeConnection")
+        IMCLog.i("autoReconnect makeConnection")
         // 非强制实现
         if (!connected) {
             return
@@ -237,12 +237,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
     }
 
     internal fun failWebSocket(e: Exception, response: Response?){
-        okHttpClient
-            .dispatcher
-            .executorService
-            .submit {
-                webSocketListenerImpl.onFailure(webSocket!!,e,response)
-            }
+        webSocketListenerImpl.onFailure(webSocket!!,e,response)
     }
 
     /**
@@ -272,18 +267,18 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
                 groupId = makeGroupId,
             )
             rapidResponseForce.timeoutCallback {list->
-                Timber.i("initAutoReconnect.timeoutCallback ${list?.size}")
+                IMCLog.i("initAutoReconnect.timeoutCallback ${list?.size}")
                 synchronized(syncAutoReconnect) {
                     list?.forEach {
                         when (it) {
                             makeTimeoutId -> {
                                 // 连接超时
-                                Timber.i("initAutoReconnect 连接超时")
+                                IMCLog.i("initAutoReconnect 连接超时")
                                 failure(okhttpIEngine, TimeoutException("连接超时"))
                             }
 
                             makeTimekeepingId -> {
-                                Timber.i("initAutoReconnect 积蓄完毕开始抢救")
+                                IMCLog.i("initAutoReconnect 积蓄完毕开始抢救")
                                 reconnect()
                             }
                         }
@@ -293,7 +288,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         fun startReconnectCycle() {
-            Timber.i("startReconnectCycle 开始抢救 ${okhttpIEngine.engineState}")
+            IMCLog.i("startReconnectCycle 开始抢救 ${okhttpIEngine.engineState}")
             // 连接正常
             if (okhttpIEngine.engineState == IEngineState.ENGINE_OPEN){
                 return
@@ -311,9 +306,9 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             }
         }
         fun resetStartReconnectCycle(){
-            Timber.i("resetStartReconnectCycle 重置开始抢救 ${okhttpIEngine.engineState} ${isConnecting}")
+            IMCLog.i("resetStartReconnectCycle 重置开始抢救 ${okhttpIEngine.engineState} ${isConnecting}")
             synchronized(syncAutoReconnect){
-                Timber.i("resetStartReconnectCycle 重置开始抢救 111")
+                IMCLog.i("resetStartReconnectCycle 重置开始抢救 111")
                 reconnectDelay = initReconnectDelay // Reset Delay Timer
                 reconnect()
             }
@@ -334,7 +329,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         fun stopReconnectCycle() {
-            Timber.i("stopReconnectCycle 停止抢救")
+            IMCLog.i("stopReconnectCycle 停止抢救")
             synchronized(syncAutoReconnect){
                 rapidResponseForce.unRegister(makeTimekeepingId)
                 rapidResponseForce.unRegister(makeTimeoutId)
@@ -348,7 +343,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
                 if (reconnectDelay < okhttpIEngine.maxReconnectDelay) {
                     reconnectDelay *= 2
                 }
-                Timber.i("failure 抢救失败 积蓄能量准备下次抢救， 在${reconnectDelay}ms之后")
+                IMCLog.i("failure 抢救失败 积蓄能量准备下次抢救， 在${reconnectDelay}ms之后")
                 rapidResponseForce.unRegister(makeTimekeepingId)
                 rapidResponseForce.unRegister(makeTimeoutId)
                 rapidResponseForce.register(makeTimekeepingId, makeTimekeepingId, reconnectDelay)
@@ -360,7 +355,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
                 return
             }
             if (okhttpIEngine.webSocket == null){
-                Timber.i("connect 抢救失败")
+                IMCLog.i("connect 抢救失败")
                 failure(okhttpIEngine, IllegalStateException("webSocket == null"))
                 return
             }
@@ -368,12 +363,12 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
                 .connect(okhttpIEngine.webSocket?.request()!!,
                     object : IEngineActionListener {
                         override fun onSuccess(iEngine: IEngine) {
-                            Timber.i("connect 抢救成功")
+                            IMCLog.i("connect 抢救成功")
                             stopReconnectCycle()
                         }
 
                         override fun onFailure(iEngine: IEngine, t: Throwable) {
-                            Timber.i("connect 抢救失败")
+                            IMCLog.i("connect 抢救失败")
                             failure(iEngine, t)
                         }
                     })
@@ -390,6 +385,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
     private class Heartbeat : V2IMCSocketListener {
         private lateinit var rapidResponseForce : RapidResponseForce<String>
         var heartbeatInterval = 5 * 1000L
+        val MAX_FAILURE_COUNT = 3
         private lateinit var okhttpIEngine: OkhttpIEngine
         private lateinit var customHeartbeat : CustomHeartbeat
         // 组ID
@@ -398,8 +394,10 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         private val makeTimekeepingId  = "Heartbeat:Timekeeping:${hashCode()}"
         // 超时
         private val makeTimeoutId  = "Heartbeat:Timeout:${hashCode()}"
+        private var failureCount = 0
         fun initHeartbeat(engine: OkhttpIEngine, heartbeat : CustomHeartbeat, name: String) {
-            Timber.i("Heartbeat 初始化心跳机制")
+            IMCLog.i("Heartbeat 初始化心跳机制")
+            failureCount = 0
             customHeartbeat = heartbeat
             okhttpIEngine = engine
             heartbeatInterval = engine.builder.minHeartbeatInterval.toLong()
@@ -412,9 +410,14 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
                 list?.forEach {
                     when (it) {
                         makeTimeoutId -> {
-                            failure(okhttpIEngine, TimeoutException("连接超时"))
+                            failureCount++
+                            if (failureCount < MAX_FAILURE_COUNT
+                                && okhttpIEngine.builder.minHeartbeatInterval.toLong() == heartbeatInterval){
+                                startHeartbeat()
+                            }else{
+                                failure(okhttpIEngine, TimeoutException("连接超时"))
+                            }
                         }
-
                         makeTimekeepingId -> {
                             startHeartbeat()
                         }
@@ -424,7 +427,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         fun startHeartbeat() {
-            Timber.i("Heartbeat 启动心跳")
+            IMCLog.i("Heartbeat 启动心跳")
             rapidResponseForce.unRegister(makeTimeoutId)
             rapidResponseForce.unRegister(makeTimekeepingId)
             // 准备接收，超时监听
@@ -433,7 +436,8 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         fun stopHeartbeat() {
-            Timber.i("Heartbeat 停止心跳")
+            IMCLog.i("Heartbeat 停止心跳")
+            failureCount = 0
             rapidResponseForce.unRegister(makeTimekeepingId)
             rapidResponseForce.unRegister(makeTimeoutId)
         }
@@ -443,23 +447,24 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             rapidResponseForce.unRegister(makeTimeoutId)
             // 准备接收，超时监听
             rapidResponseForce.register(makeTimekeepingId,makeTimekeepingId,heartbeatInterval)
-            Timber.i("Heartbeat 延时等待下一次：${heartbeatInterval}")
+            IMCLog.i("Heartbeat 延时等待下一次：${heartbeatInterval}")
         }
 
         private fun sendHeartbeat(){
-            Timber.i("Heartbeat 发送心跳 ")
+            IMCLog.i("Heartbeat 发送心跳 ")
             val b = if (customHeartbeat.byteOrString()) {
-                Timber.i("sendHeartbeat byte")
+                IMCLog.i("sendHeartbeat byte")
                 okhttpIEngine.send(customHeartbeat.byteHeartbeat())
             } else {
                 okhttpIEngine.send(customHeartbeat.stringHeartbeat().also {
-                    Timber.i("sendHeartbeat ${it}")
+                    IMCLog.i("sendHeartbeat ${it}")
                 })
             }
-            Timber.i("Heartbeat 发送心跳结果：$b ")
+            IMCLog.i("Heartbeat 发送心跳结果：$b ")
         }
         private fun failure(iEngine: IEngine, t: Throwable){
-            Timber.i("Heartbeat 心跳无回执")
+            failureCount = 0
+            IMCLog.i("Heartbeat 心跳无回执")
             okhttpIEngine.failWebSocket(
                 SocketTimeoutException(
                     "sent ping but didn't receive pong within " +
@@ -476,7 +481,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         }
 
         private fun updateAuxiliaryHeartbeat(isHeartbeat:Boolean):Boolean {
-            Timber.i("Heartbeat 心跳回执 ${isHeartbeat}")
+            IMCLog.i("Heartbeat 心跳回执 ${isHeartbeat}")
             //心跳
             if (isHeartbeat){
                 rescheduleHeartbeat()
@@ -521,6 +526,8 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         internal var minHeartbeatInterval = 5 * 1000
         internal var maxReconnectDelay = 128 * 1000
         internal var customHeartbeat : CustomHeartbeat? = null
+        internal var debug = false
+        internal var imcLogFactory :IIMCLogFactory? = null
 
         /**
          * Ok http client
@@ -542,6 +549,9 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
         fun customHeartbeat(customHeartbeat: CustomHeartbeat) = apply {
             this.customHeartbeat = customHeartbeat
         }
+        fun setIMCLog(imcLogFactory: IIMCLogFactory) = apply {
+            this.imcLogFactory = imcLogFactory
+        }
 
         fun heartbeatInterval(min: Long, max: Long, unit: TimeUnit) = apply {
             minHeartbeatInterval = checkDuration("minHeartbeatInterval", min, unit)
@@ -552,7 +562,13 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             maxReconnectDelay = checkDuration("maxReconnectDelay", delay, unit)
         }
 
+        fun debug(debug:Boolean) = apply {
+            this.debug  = debug
+        }
+        fun debug():Boolean = debug
+
         fun build(): OkhttpIEngine {
+            IMCLog.setIIMCLogFactory(imcLogFactory)
             return OkhttpIEngine(this)
         }
     }

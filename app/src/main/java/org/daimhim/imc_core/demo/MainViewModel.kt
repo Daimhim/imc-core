@@ -22,7 +22,7 @@ class MainViewModel : ViewModel() {
     val onMessage : SharedFlow<MainItem> =_onMessage
 
 //    private val BASE_URL = ""
-    private val BASE_URL = ""
+    private val BASE_URL = "https://45b46eef.r2.cpolar.cn"
 //    private val BASE_URL = ""
 
 
@@ -33,6 +33,7 @@ class MainViewModel : ViewModel() {
                 .Builder()
 //            .connectTimeout(5L,TimeUnit.SECONDS)
                 .build())
+        .setIMCLog(TimberIMCLog("11111111111111111111"))
         .customHeartbeat(QGBHeartbeat())
         .build()
     init {

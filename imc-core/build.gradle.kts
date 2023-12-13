@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "org.daimhim.imc.core"
-version = "3.0.5.23-SNAPSHOT"
+version = "3.0.5.30-SNAPSHOT"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
@@ -14,7 +14,7 @@ java {
 
 dependencies {
     compileOnly("com.squareup.okhttp3:okhttp:4.9.0")
-    compileOnly("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.6.2")
+    compileOnly("com.github.Daimhim.timber-multiple-platforms:timber:1.0.6.3")
 }
 
 afterEvaluate{

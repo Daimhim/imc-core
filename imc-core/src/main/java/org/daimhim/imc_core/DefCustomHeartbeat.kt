@@ -1,10 +1,9 @@
 package org.daimhim.imc_core
 
-import timber.multiplatform.log.Timber
 
 class DefCustomHeartbeat : CustomHeartbeat {
     override fun isHeartbeat(iEngine: IEngine, bytes: ByteArray): Boolean {
-        Timber.i("isHeartbeat ByteString")
+        IMCLog.i("isHeartbeat ByteString")
         return bytes.isEmpty()
     }
 
@@ -13,7 +12,7 @@ class DefCustomHeartbeat : CustomHeartbeat {
     }
 
     override fun byteHeartbeat(): ByteArray {
-        Timber.i("byteHeartbeat ByteString")
+        IMCLog.i("byteHeartbeat ByteString")
         return byteArrayOf()
     }
 
@@ -22,7 +21,7 @@ class DefCustomHeartbeat : CustomHeartbeat {
     }
 
     override fun byteOrString(): Boolean {
-        Timber.i("byteOrString true")
+        IMCLog.i("byteOrString true")
         return true
     }
 }
