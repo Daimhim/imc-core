@@ -27,7 +27,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             IMCLog.i("onClosed code$code reason$reason")
             engineState = IEngineState.ENGINE_CLOSED
             heartbeat.stopHeartbeat()
-            imcStatusListener?.connectionClosed()
+            imcStatusListener?.connectionClosed(code, reason)
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

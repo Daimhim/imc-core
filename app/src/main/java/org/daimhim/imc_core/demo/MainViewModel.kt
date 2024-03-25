@@ -12,6 +12,7 @@ import okhttp3.Request
 import okio.ByteString
 import org.daimhim.imc_core.*
 import timber.multiplatform.log.Timber
+import java.net.URI
 
 class MainViewModel : ViewModel() {
 
@@ -22,29 +23,34 @@ class MainViewModel : ViewModel() {
     val onMessage : SharedFlow<MainItem> =_onMessage
 
 //    private val BASE_URL = ""
-    private val BASE_URL = "https://45b46eef.r2.cpolar.cn"
+    private val BASE_URL = "ws://124.222.224.186:8800"
+//    private val BASE_URL = "http://e6ebacd.r15.cpolar.top"
 //    private val BASE_URL = ""
 
 
-    private var iEngine : OkhttpIEngine = OkhttpIEngine
-        .Builder()
-        .okHttpClient(
-            OkHttpClient
-                .Builder()
-//            .connectTimeout(5L,TimeUnit.SECONDS)
-                .build())
-        .setIMCLog(TimberIMCLog("11111111111111111111"))
-        .customHeartbeat(QGBHeartbeat())
-        .build()
+//    private var iEngine : OkhttpIEngine = OkhttpIEngine
+//        .Builder()
+//        .okHttpClient(
+//            OkHttpClient
+//                .Builder()
+////            .connectTimeout(5L,TimeUnit.SECONDS)
+//                .build())
+//        .setIMCLog(TimberIMCLog("11111111111111111111"))
+//        .customHeartbeat(QGBHeartbeat())
+//        .build()
+
+    private var iEngine  = JavaWebEngine()
     init {
         iEngine.setIMCStatusListener(object : IMCStatusListener {
-            override fun connectionClosed() {
+
+            override fun connectionClosed(code: Int, reason: String?) {
                 Timber.i("connectionClosed")
                 viewModelScope
                     .launch {
                         _IMCStatus.emit(IEngineState.ENGINE_CLOSED)
                     }.start()
             }
+
 
             override fun connectionLost(throwable: Throwable) {
                 Timber.i(throwable,"connectionLost")
@@ -90,19 +96,26 @@ class MainViewModel : ViewModel() {
     fun login(name:String){
         try {
             iEngine
-                .engineOn(Request.Builder().url(BASE_URL).build(),object : IEngineActionListener{
-                    override fun onSuccess(iEngine: IEngine) {
-                        Timber.i("IEngineActionListener onSuccess")
-                    }
-
-                    override fun onFailure(iEngine: IEngine, t: Throwable) {
-                        Timber.i(t,"IEngineActionListener onFailure")
-                    }
-
-                })
+                .engineOn(BASE_URL)
         }catch (e:Exception){
             e.printStackTrace()
         }
+//        try {
+//            iEngine
+//                .engineOn(Request.Builder().url(BASE_URL).build(),object : IEngineActionListener{
+//                    override fun onSuccess(iEngine: IEngine) {
+//                        Timber.i("IEngineActionListener onSuccess")
+//                    }
+//
+//                    override fun onFailure(iEngine: IEngine, t: Throwable) {
+//                        Timber.i(t,"IEngineActionListener onFailure")
+//                    }
+//
+//                })
+//        }catch (e:Exception){
+//            e.printStackTrace()
+//        }
+        Timber.i("IEngineActionListener onSuccess")
     }
     fun send(name:String,text:String){
         iEngine

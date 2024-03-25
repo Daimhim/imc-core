@@ -33,8 +33,9 @@ class ExampleUnitTest {
             .build()
         var preprocessedCharacters: String
         okhttpIEngine.setIMCStatusListener(object : IMCStatusListener {
-            override fun connectionClosed() {
-                Timber.i("connectionClosed")
+
+            override fun connectionClosed(code: Int, reason: String?) {
+                Timber.i("connectionClosed code:${code} reason:${reason}")
             }
 
             override fun connectionLost(throwable: Throwable) {

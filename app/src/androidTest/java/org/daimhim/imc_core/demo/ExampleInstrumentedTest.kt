@@ -1,7 +1,12 @@
 package org.daimhim.imc_core.demo
 
+import android.os.Handler
+import android.os.Looper
+import androidx.test.core.app.ApplicationProvider.getApplicationContext
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.tencent.mars.Mars
+import com.tencent.mars.sdt.SdtLogic
 
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,6 +24,10 @@ class ExampleInstrumentedTest {
     fun useAppContext() {
         // Context of the app under test.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+
+
+
+//        Thread.sleep(9000)
         assertEquals("org.daimhim.imc_core.demo", appContext.packageName)
     }
 }

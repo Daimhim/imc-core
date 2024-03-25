@@ -9,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import com.kongqw.network.monitor.NetworkMonitorManager
 import com.kongqw.network.monitor.enums.NetworkState
 import com.kongqw.network.monitor.interfaces.NetworkMonitor
+import com.tencent.mars.sdt.SdtLogic
 import kotlinx.coroutines.launch
 import org.daimhim.imc_core.IEngineState
 import org.daimhim.imc_core.demo.databinding.ActivityMainBinding
@@ -67,6 +68,13 @@ class MainActivity : AppCompatActivity() {
             .start()
         FullLifecycleHandler
             .registerForegroundCallback(foregroundCallback)
+        SdtLogic.setCallBack(object : SdtLogic.ICallBack{
+            override fun reportSignalDetectResults(p0: String?) {
+                println("SDTUnitTest.reportSignalDetectResults:${p0}")
+            }
+        })
+        SdtLogic.setHttpNetcheckCGI("https://58a4ad34.r15.cpolar.top")
+        Thread.sleep(9000)
     }
 
     private fun initListener() {

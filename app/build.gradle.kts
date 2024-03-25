@@ -47,4 +47,7 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.1.3")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.4.0")
     implementation("com.github.kongqw:NetworkMonitor:1.2.0")
+//    implementation("com.tencent.mars:mars-wrapper:1.2.5")
+    implementation("com.tencent.mars:mars-core:1.2.5")
+    implementation("org.java-websocket:Java-WebSocket:1.5.4")
 }
