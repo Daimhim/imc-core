@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import com.kongqw.network.monitor.NetworkMonitorManager
+import org.daimhim.imc_core.IMCLog
 import timber.multiplatform.log.DebugTree
 import timber.multiplatform.log.Timber
 

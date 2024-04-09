@@ -68,13 +68,13 @@ class MainActivity : AppCompatActivity() {
             .start()
         FullLifecycleHandler
             .registerForegroundCallback(foregroundCallback)
-        SdtLogic.setCallBack(object : SdtLogic.ICallBack{
-            override fun reportSignalDetectResults(p0: String?) {
-                println("SDTUnitTest.reportSignalDetectResults:${p0}")
-            }
-        })
-        SdtLogic.setHttpNetcheckCGI("https://58a4ad34.r15.cpolar.top")
-        Thread.sleep(9000)
+//        SdtLogic.setCallBack(object : SdtLogic.ICallBack{
+//            override fun reportSignalDetectResults(p0: String?) {
+//                println("SDTUnitTest.reportSignalDetectResults:${p0}")
+//            }
+//        })
+//        SdtLogic.setHttpNetcheckCGI("https://58a4ad34.r15.cpolar.top")
+//        Thread.sleep(9000)
     }
 
     private fun initListener() {

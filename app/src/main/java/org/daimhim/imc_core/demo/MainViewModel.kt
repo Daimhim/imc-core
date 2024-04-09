@@ -93,10 +93,10 @@ class MainViewModel : ViewModel() {
             })
     }
 
-    fun login(name:String){
+    fun login(name:String = BASE_URL){
         try {
             iEngine
-                .engineOn(BASE_URL)
+                .engineOn(name)
         }catch (e:Exception){
             e.printStackTrace()
         }
@@ -122,12 +122,15 @@ class MainViewModel : ViewModel() {
             .send(text)
     }
     fun loginOut(){
-        iEngine
-            .engineOff()
+        Thread(kotlinx.coroutines.Runnable {
+            iEngine
+                .engineOff()
+            Timber.i("loginOut()")
+        }).start()
     }
 
     fun setForeground(foreground:Boolean){
-        iEngine.onChangeMode(if (foreground) 0 else 1)
+        iEngine.onChangeMode(if (foreground) 5 else 45)
     }
     fun onNetworkChange(networkState:Int){
         iEngine.onNetworkChange(networkState)

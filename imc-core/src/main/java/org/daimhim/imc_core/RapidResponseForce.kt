@@ -1,5 +1,6 @@
 package org.daimhim.imc_core
 
+import timber.multiplatform.log.Timber
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.PriorityBlockingQueue
 
@@ -49,9 +50,9 @@ class RapidResponseForce<T : Any>(
         }
     }
     fun register(id: String, t: T?, timeOut: Long = MAX_TIMEOUT_TIME){
-        if (!groupId.startsWith("AutoReconnect") && !groupId.startsWith("Heartbeat")) {
-            IMCLog.i("register ${groupId} id:${id} timeOut:${timeOut}")
-        }
+//        if (!groupId.startsWith("AutoReconnect") && !groupId.startsWith("Heartbeat")) {
+            Timber.i("register ${groupId} id:${id} timeOut:${timeOut}")
+//        }
         priorityBlockingQueue.offer(WrapOrderState<Any?>(groupId,id,t,timeOut))
         startTrainBoiler()
     }
@@ -62,9 +63,9 @@ class RapidResponseForce<T : Any>(
     }
 
     fun unRegister(id: String):T?{
-        if (!groupId.startsWith("AutoReconnect") && !groupId.startsWith("Heartbeat")) {
-            IMCLog.i("unRegister ${groupId} id:${id}")
-        }
+//        if (!groupId.startsWith("AutoReconnect") && !groupId.startsWith("Heartbeat")) {
+            Timber.i("unRegister ${groupId} id:${id}")
+//        }
         val register = getRegister(id)
         priorityBlockingQueue.remove(register)
         return (register?.t as T?).apply { startTrainBoiler() }
@@ -115,7 +116,7 @@ class RapidResponseForce<T : Any>(
             //超时队列
             val timeoutMap = mutableMapOf<String, MutableSet<WrapOrderState<Any?>>>()
             var wrapOrderStates: MutableSet<WrapOrderState<Any?>>
-            IMCLog.i("PowerTrainRunnable 初次启动")
+            Timber.i("PowerTrainRunnable 初次启动")
             while (true){
                 calmDown = false
                 closest = 0L
@@ -123,7 +124,7 @@ class RapidResponseForce<T : Any>(
                 // 上次与本次间隔
                 lastInterval = Math.abs(current - recently)
                 lastInterval = if (lastInterval < 0) 0 else lastInterval
-                IMCLog.i("PowerTrainRunnable 让气氛热起来 lastInterval:${lastInterval} ${priorityBlockingQueue.size}")
+                Timber.i("PowerTrainRunnable 让气氛热起来 lastInterval:${lastInterval} ${priorityBlockingQueue.size}")
                 for (wrapOrderState in priorityBlockingQueue) {
                     // 上次累计时间 + 截至目前的经过时间
                     currentItemCumulativeTime = wrapOrderState.integrationTime + lastInterval
@@ -145,7 +146,7 @@ class RapidResponseForce<T : Any>(
                         priorityBlockingQueue.removeAll(entry.value)
                         // 回调超时的
                         timeoutCallbackMap[entry.key]?.invoke(entry.value.map {
-                            IMCLog.i("PowerTrainRunnable 宾客退场:${it.groupId} ${it.childId}")
+                            Timber.i("PowerTrainRunnable 宾客退场:${it.groupId} ${it.childId}")
                             it.t
                         })
                     }catch (e:Exception){
@@ -160,7 +161,7 @@ class RapidResponseForce<T : Any>(
                     calmDown = true
                     coolingTime = MAXIMUM_IDLE_TIME
                 }
-                IMCLog.i("PowerTrainRunnable 冷静：almDown:${calmDown} ${priorityBlockingQueue.size} coolingTime:${coolingTime}")
+                Timber.i("PowerTrainRunnable 冷静：almDown:${calmDown} ${priorityBlockingQueue.size} coolingTime:${coolingTime}")
                 synchronized(syncRRF){
                     syncRRF.wait(coolingTime)
                 }
@@ -169,7 +170,7 @@ class RapidResponseForce<T : Any>(
                     break
                 }
             }
-            IMCLog.i("PowerTrainRunnable 执行结束")
+            Timber.i("PowerTrainRunnable 执行结束")
             reviewThread = null
         }
     }
