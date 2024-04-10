@@ -50,4 +50,5 @@ dependencies {
 //    implementation("com.tencent.mars:mars-wrapper:1.2.5")
     implementation("com.tencent.mars:mars-core:1.2.5")
     implementation("org.java-websocket:Java-WebSocket:1.5.4")
+    implementation("com.google.android.gms:play-services-cronet:18.0.1")
 }
