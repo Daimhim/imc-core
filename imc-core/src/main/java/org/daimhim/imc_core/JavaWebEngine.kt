@@ -4,6 +4,7 @@ import okio.ByteString.Companion.toByteString
 import org.java_websocket.WebSocket
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.drafts.Draft_6455
+import org.java_websocket.enums.ReadyState
 import org.java_websocket.framing.CloseFrame
 import org.java_websocket.framing.Framedata
 import org.java_websocket.framing.PingFrame
@@ -11,7 +12,6 @@ import org.java_websocket.handshake.ServerHandshake
 import timber.multiplatform.log.Timber
 import java.net.URI
 import java.nio.ByteBuffer
-import java.util.concurrent.Callable
 import java.util.concurrent.TimeUnit
 
 class JavaWebEngine : IEngine {
@@ -36,6 +36,7 @@ class JavaWebEngine : IEngine {
 
     // 重置中
     private var isResetting = false
+    private val syncJWE = Any()
 
     // socket回调
     private val javaWebsocketListener = object : JavaWebSocketListener {
@@ -60,7 +61,6 @@ class JavaWebEngine : IEngine {
             Timber.i("onClose code:${code} reason:${reason} remote:${remote}")
             imcStatusListener
                 ?.connectionClosed(code, reason)
-            cleanPreviousConnection()
             // 重置中
             if (isResetting) {
                 engineOn(currentKey)
@@ -72,7 +72,6 @@ class JavaWebEngine : IEngine {
             imcStatusListener
                 ?.connectionLost(ex)
             forceClose(CONNECTION_UNEXPECTEDLY_CLOSED, "${ex.message}")
-            cleanPreviousConnection()
             // 重置中
             if (isResetting) {
                 engineOn(currentKey)
@@ -91,40 +90,40 @@ class JavaWebEngine : IEngine {
 
     override fun engineOn(key: String) {
         // 更换URL
-        Timber.i("engineOn ${webSocketClient == null}")
-        if (webSocketClient == null) {
-            val finalUrl: String = when {
-                key.startsWith("http:", ignoreCase = true) -> {
-                    "ws:${key.substring(5)}"
+        synchronized(syncJWE){
+            Timber.i("engineOn ${webSocketClient == null}")
+            if (webSocketClient == null) {
+                val finalUrl: String = when {
+                    key.startsWith("http:", ignoreCase = true) -> {
+                        "ws:${key.substring(5)}"
+                    }
+                    key.startsWith("https:", ignoreCase = true) -> {
+                        "wss:${key.substring(6)}"
+                    }
+                    else -> key
                 }
-
-                key.startsWith("https:", ignoreCase = true) -> {
-                    "wss:${key.substring(6)}"
-                }
-
-                else -> key
+                webSocketClient = WebSocketClientImpl(
+                    URI(finalUrl),
+                    timeout = connectTimeout
+                )
             }
-            webSocketClient = WebSocketClientImpl(
-                URI(finalUrl),
-                timeout = connectTimeout
-            )
+            // 已连接，是否需要重置URL
+            if (isConnect()) {
+                resetKey(key)
+                return
+            }
+            // 正在连接中，是否需要重置URL
+            if (isConnecting) {
+                resetKey(key)
+                return
+            }
+            // 初始化状态
+            webSocketClient?.javaWebSocketListener = javaWebsocketListener
+            webSocketClient?.connectionLostTimeout = heartbeatInterval
+            webSocketClient?.connect()
+            isConnecting = true
+            isResetting = false
         }
-        // 已连接，是否需要重置URL
-        if (isConnect()) {
-            resetKey(key)
-            return
-        }
-        // 正在连接中，是否需要重置URL
-        if (isConnecting) {
-            resetKey(key)
-            return
-        }
-        // 初始化状态
-        webSocketClient?.javaWebSocketListener = javaWebsocketListener
-        webSocketClient?.connectionLostTimeout = heartbeatInterval
-        webSocketClient?.connect()
-        isConnecting = true
-        isResetting = false
     }
 
     private fun resetKey(key: String) {
@@ -137,13 +136,19 @@ class JavaWebEngine : IEngine {
     }
 
     override fun engineOff() {
-        webSocketClient?.close()
+        cleanPreviousConnection()
+        webSocketClient?.closeBlocking()
+        webSocketClient?.javaWebSocketListener = null
+        webSocketClient = null
+        synchronized(syncJWE){
+            isConnecting = false
+            isResetting = false
+        }
     }
 
     private fun cleanPreviousConnection() {
-        webSocketClient?.javaWebSocketListener = null
-        webSocketClient = null
-        isConnecting = false
+        webSocketClient?.stopConnectionLostTimer()
+        webSocketClient?.stopAutoConnect()
     }
 
     private fun forceClose(code: Int, reason: String?) {
@@ -156,19 +161,12 @@ class JavaWebEngine : IEngine {
     }
 
     override fun engineState(): Int {
-        if (webSocketClient == null) {
-            return IEngineState.ENGINE_CLOSED
+        val readyState = webSocketClient?.readyState ?: ReadyState.NOT_YET_CONNECTED
+        return if (readyState == ReadyState.OPEN){
+            IEngineState.ENGINE_OPEN
+        }else{
+            IEngineState.ENGINE_CLOSED
         }
-        if (webSocketClient?.isClosed == true) {
-            return IEngineState.ENGINE_CLOSED
-        }
-        if (webSocketClient?.isClosing == true) {
-            return IEngineState.ENGINE_CLOSED
-        }
-        if (webSocketClient?.isOpen == true) {
-            return IEngineState.ENGINE_OPEN
-        }
-        return IEngineState.ENGINE_CLOSED_FAILED
     }
 
     override fun send(byteArray: ByteArray): Boolean {
@@ -211,6 +209,7 @@ class JavaWebEngine : IEngine {
     }
 
     override fun onNetworkChange(networkState: Int) {
+        webSocketClient?.resetStartAutoConnect()
     }
 
     override fun makeConnection() {
@@ -229,16 +228,19 @@ class JavaWebEngine : IEngine {
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
         var javaWebSocketListener: JavaWebSocketListener? = null
         val rapidResponseForce = RapidResponseForceV2()
+        private var isClosed = false
+        // 最后一次心跳响应
         private var lastPong = System.nanoTime()
 
         // 心跳间隔
         val HEARTBEAT_INTERVAL = "HEARTBEAT_INTERVAL"
+        //定时器
+        private val AUTO_RECONNECT  = "AUTO_RECONNECT"
 
         // 心跳超时
-//        val HEARTBEAT_TIMEOUT = "HEARTBEAT_TIMEOUT"
         private val timedTasks = object : Comparable<Pair<String, Any?>> {
             override fun compareTo(other: Pair<String, Any?>): Int {
-//                Timber.i("timeoutCallback ${other.first}")
+                Timber.i("timeoutCallback ${other.first}")
                 if (other.first == HEARTBEAT_INTERVAL) {
                     try {
                         var minimumPongTime: Long
@@ -259,18 +261,23 @@ class JavaWebEngine : IEngine {
                     synchronized(syncConnectionLost) {
                         restartConnectionLostTimer()
                     }
+                } else if (other.first == AUTO_RECONNECT){
+                    synchronized(syncConnectionLost) {
+                        isWaitingNextAutomaticConnection = false
+                    }
+                    startConnect(other.second)
                 }
                 return 0;
             }
 
         }
-
         init {
             rapidResponseForce.timeoutCallback(this.timedTasks)
         }
 
         override fun onOpen(handshakedata: ServerHandshake?) {
             updateLastPong()
+            stopAutoConnect()
             javaWebSocketListener?.onOpen(handshakedata)
         }
 
@@ -288,10 +295,52 @@ class JavaWebEngine : IEngine {
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {
             javaWebSocketListener?.onClose(code, reason, remote)
+            if (isClosed){
+                return
+            }
+            // 停止心跳
+            stopConnectionLostTimer()
+            // 是否启动了 自动抢救
+            if (!rescueEnable){
+                return
+            }
+            // 连接结果初始化
+            synchronized(syncConnectionLost){
+                isConnecting_Automatically = false
+            }
+            // 初次还是多次
+            if (isAutomaticallyConnecting){
+                // 连接已经过了
+                waitingNextAutomaticConnection(reconnectDelay)
+                return
+            }
+            // 初次
+            startAutoConnect()
         }
 
         override fun onError(ex: Exception) {
             javaWebSocketListener?.onError(ex)
+            if (isClosed){
+                return
+            }
+            // 停止心跳
+            stopConnectionLostTimer()
+            // 是否启动了 自动抢救
+            if (!rescueEnable){
+                return
+            }
+            // 连接结果初始化
+            synchronized(syncConnectionLost){
+                isConnecting_Automatically = false
+            }
+            // 初次还是多次
+            if (isAutomaticallyConnecting){
+                // 连接已经过了
+                waitingNextAutomaticConnection(reconnectDelay)
+                return
+            }
+            // 初次
+            startAutoConnect()
         }
 
         override fun onPreparePing(conn: WebSocket?): PingFrame {
@@ -300,7 +349,7 @@ class JavaWebEngine : IEngine {
         }
 
         override fun onWebsocketPong(conn: WebSocket?, f: Framedata?) {
-            Timber.i("onWebsocketPong updateLastPong")
+//            Timber.i("onWebsocketPong updateLastPong")
             updateLastPong()
             javaWebSocketListener?.onWebsocketPong()
             super.onWebsocketPong(conn, f)
@@ -318,7 +367,7 @@ class JavaWebEngine : IEngine {
         }
 
         override fun setConnectionLostTimeout(connectionLostTimeout: Int) {
-            Timber.i("setConnectionLostTimeout ${connectionLostTimeout}")
+//            Timber.i("setConnectionLostTimeout ${connectionLostTimeout}")
             synchronized(syncConnectionLost) {
                 this.connectionLostTimeout = TimeUnit.SECONDS.toNanos(connectionLostTimeout.toLong())
                 if (this.connectionLostTimeout <= 0) {
@@ -343,8 +392,8 @@ class JavaWebEngine : IEngine {
             }
         }
 
-        override fun stopConnectionLostTimer() {
-            Timber.i("stopConnectionLostTimer")
+        public override fun stopConnectionLostTimer() {
+//            Timber.i("stopConnectionLostTimer")
             synchronized(syncConnectionLost) {
                 websocketRunning = false
                 cancelConnectionLostTimer()
@@ -364,6 +413,7 @@ class JavaWebEngine : IEngine {
         }
 
         private fun executeConnectionLostDetection(webSocket: WebSocket, minimumPongTime: Long): Boolean {
+            Timber.i("executeConnectionLostDetection sendPing111")
 //            Timber.i("executeConnectionLostDetection")
             if (getLastPong() < minimumPongTime) {
                 webSocket.closeConnection(
@@ -378,7 +428,6 @@ class JavaWebEngine : IEngine {
             if (!websocketRunning) {
                 return false
             }
-            Timber.i("executeConnectionLostDetection sendPing111")
             webSocket.sendPing()
             Timber.i("executeConnectionLostDetection sendPing222")
             return true
@@ -395,9 +444,104 @@ class JavaWebEngine : IEngine {
             this.lastPong = System.nanoTime();
         }
 
+        override fun close() {
+            super.close()
+            synchronized(syncConnectionLost){
+                isClosed = true
+            }
+        }
 
+        override fun connect() {
+            super.connect()
+            synchronized(syncConnectionLost){
+                isClosed = false
+            }
+        }
+        /***
+         * 抢救启用
+         */
+        var rescueEnable = true
+        /**
+         * 正在抢救中
+         */
+        private var isAutomaticallyConnecting = false
+
+        /**
+         * 连接中状态 连接结果，open/close
+         */
+        private var isConnecting_Automatically = false
+        /**
+         * 进入等待下一次连接
+         */
+        private var isWaitingNextAutomaticConnection = false
+        // 初始值
+        private val initReconnectDelay = 1000L
+        internal var reconnectDelay = initReconnectDelay  // Reconnect delay, starts at 1
+        var maxReconnectDelay = 128_1000L
+
+        fun startAutoConnect(){
+            Timber.i("开始抢救 isConnecting_Automatically:${isConnecting_Automatically} ${isAutomaticallyConnecting} isOpen:${isOpen}")
+            synchronized(syncConnectionLost){
+                if (isOpen){
+                    // 不需要抢救
+                    return
+                }
+                if (isAutomaticallyConnecting){
+                    //多次启动 直接返回
+                    return
+                }
+                if (isConnecting_Automatically){
+                    // 正在连接 直接返回
+                    return
+                }
+                // 初次 记录一下初次
+                isAutomaticallyConnecting = true
+                waitingNextAutomaticConnection(reconnectDelay)
+            }
+        }
+
+        private fun waitingNextAutomaticConnection(delay:Long){
+            Timber.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection}")
+            synchronized(syncConnectionLost){
+                if (isWaitingNextAutomaticConnection){
+                    return
+                }
+                if (reconnectDelay < maxReconnectDelay){
+                    reconnectDelay  = delay * 2
+                }
+                isWaitingNextAutomaticConnection = true
+                rapidResponseForce.register(AUTO_RECONNECT,null,reconnectDelay)
+            }
+        }
+        fun resetStartAutoConnect(){
+            Timber.i("重置抢救，之前记录${reconnectDelay}")
+            stopAutoConnect()
+            startAutoConnect()
+        }
+        fun stopAutoConnect(){
+            Timber.i("停止抢救")
+            synchronized(syncConnectionLost){
+                isAutomaticallyConnecting = false
+                isConnecting_Automatically = false
+                isWaitingNextAutomaticConnection = false
+                reconnectDelay = initReconnectDelay
+                rapidResponseForce.unRegister(AUTO_RECONNECT)
+            }
+        }
+
+        fun startConnect(any: Any?){
+            Timber.i("startConnect 111 ${isConnecting_Automatically}")
+            synchronized(syncConnectionLost){
+                if (isConnecting_Automatically){
+                    return
+                }
+                isConnecting_Automatically = true
+            }
+//            reconnectBlocking()
+            reconnect()
+            Timber.i("startConnect 222")
+        }
     }
-
 
     interface JavaWebSocketListener {
         fun onOpen(handshakedata: ServerHandshake?)

@@ -58,7 +58,7 @@ class RapidResponseForceV2(
     }
     fun register(id: String, t: Any? = null, timeOut: Long = MAX_TIMEOUT_TIME){
         Timber.i("register id:${id}")
-        operationTasksQueue.add(RRF_INCREASE to WrapOrderState(groupId,id,t,timeOut))
+        operationTasksQueue.add(RRF_INCREASE to WrapOrderState(groupId = groupId,id,t,timeOut))
         startProcessor()
     }
     fun unRegister(id: String) {
@@ -107,16 +107,14 @@ class RapidResponseForceV2(
             // 单项剩余时间
             var remainingTime = 0L
             while (true){
-                Timber.i("是否使用全局休眠时间 ${operationTasksQueue.isEmpty() && taskToBeExecuted.isEmpty()}")
                 // 没有操作 没有任务 使用全局休眠时间
-                if (operationTasksQueue.isEmpty() && taskToBeExecuted.isEmpty()){
+                if (localWaitingTime <= 0 || (operationTasksQueue.isEmpty() && taskToBeExecuted.isEmpty())){
                     localWaitingTime = MAXIMUM_IDLE_TIME
                 }
-
-                Timber.i("执行取操作,等待${localWaitingTime}")
+                Timber.i("当前操作队列：${operationTasksQueue.size} 当前待执行任务：${taskToBeExecuted.size} 当前休眠时间:${localWaitingTime}")
                 // 取操作
                 statePair = operationTasksQueue.poll(localWaitingTime,TimeUnit.MILLISECONDS)
-                Timber.i("取操作执行结果 ${statePair?.first} statePair&&taskToBeExecuted ${statePair == null && taskToBeExecuted.isEmpty()}")
+                Timber.i("取操作执行结果 first:${statePair?.first} childId:${statePair?.second?.childId} statePair&&taskToBeExecuted taskToBeExecuted.size：${taskToBeExecuted.size} ${statePair == null && taskToBeExecuted.isEmpty()}")
                 if (statePair == null && taskToBeExecuted.isEmpty()){
                     break
                 }
@@ -132,7 +130,7 @@ class RapidResponseForceV2(
                         taskToBeExecuted.removeAll(filterIndexed)
                     }
                 }
-                // 操作已经完成
+                // 操作未完成
                 if (operationTasksQueue.isNotEmpty()){
                     continue
                 }
@@ -146,8 +144,10 @@ class RapidResponseForceV2(
                 // 上次与本次间隔
                 lastInterval = Math.abs(current - recently)
                 lastInterval = if (lastInterval < 0) 0 else lastInterval
+                localWaitingTime = MAXIMUM_IDLE_TIME
                 // 过滤待删除
                 val deleteWOSs = taskToBeExecuted.filter { orderState ->
+                    Timber.i("当前任务队列：${orderState}")
                     orderState.accumulatedTime += lastInterval
                     remainingTime = orderState.timeOut - orderState.accumulatedTime
                     if (remainingTime <= 0) { // 已经超时
@@ -158,7 +158,7 @@ class RapidResponseForceV2(
                     }
                     return@filter false
                 }
-                Timber.i("删除超时任务${Arrays.toString(deleteWOSs.toTypedArray())}")
+                Timber.i("删除超时任务${Arrays.toString(deleteWOSs.toTypedArray())} 当前休眠时间：${localWaitingTime}")
                 //从来源删除
                 taskToBeExecuted.removeAll(deleteWOSs)
                 synchronized(syncRRF) {
@@ -169,7 +169,12 @@ class RapidResponseForceV2(
                                 timeoutCallbackMap.remove(deleteWOS.groupId)
                                 continue
                             }
-                            get.compareTo(deleteWOS.childId to deleteWOS.any)
+                            Timber.i("deleteWOS ${deleteWOS.childId}")
+                            Thread(object : Runnable{
+                                override fun run() {
+                                    get.compareTo(deleteWOS.childId to deleteWOS.any)
+                                }
+                            }).start()
                         } catch (e: Exception) {
                             e.printStackTrace()
                         }

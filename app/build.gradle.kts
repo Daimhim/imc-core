@@ -51,4 +51,5 @@ dependencies {
     implementation("com.tencent.mars:mars-core:1.2.5")
     implementation("org.java-websocket:Java-WebSocket:1.5.4")
     implementation("com.google.android.gms:play-services-cronet:18.0.1")
+    implementation("org.chromium.net:cronet-api:108.5359.79")
 }

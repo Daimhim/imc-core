@@ -9,7 +9,10 @@ class UDPUnitTest {
     fun addition_isCorrect() {
         println("UDPUnitTest.addition_isCorrect start")
         val iEngine = UDPEngine()
-        iEngine.engineOn("http://192.168.2.22:8888")
+
+//        iEngine.engineOn("http://192.168.2.22:8888")
+//        iEngine.engineOn("http://127.0.0.1:8888")
+        iEngine.engineOn("http://wss.qgbtech.cn:3000")
         iEngine.addIMCListener(object :V2IMCListener{
             override fun onMessage(text: String) {
                 println("UDPUnitTest.onMessage text:${text}")
@@ -19,9 +22,9 @@ class UDPUnitTest {
                 println("UDPUnitTest.onMessage byteArray:${String(byteArray)}")
             }
         })
-        println("UDPUnitTest.addition_isCorrect send")
-        iEngine.send("Hi! UDP.")
+        println("UDPUnitTest.addition_isCorrect send ${iEngine.getLocalPort()}")
+        println("UDPUnitTest.addition_isCorrect ${iEngine.send("Hi! UDP.")}")
         println("UDPUnitTest.addition_isCorrect end")
-        Thread.sleep(60000)
+        Thread.sleep(30000)
     }
 }

@@ -4,30 +4,46 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.URI
-import java.net.URL
 
 class UDPEngine : IEngine {
     private var serverAddress : URI = URI.create("http://127.0.0.1:80")
     private var isConnect = false
     private var datagramSocket:DatagramSocket? = null
+    private val syncUDP = Any()
 
     private val receiveRunnable = object : Runnable{
         override fun run() {
             val data = ByteArray(1024)
-            val udpBuffer = DatagramPacket(data,data.size)
+            var udpBuffer : DatagramPacket
             while (isConnect){
+                udpBuffer = DatagramPacket(data,data.size)
                 datagramSocket?.receive(udpBuffer)
-                imcListenerManager.onMessage(this@UDPEngine,String(udpBuffer.data))
+                println("UDPEngine.run111")
+                println("run address:${udpBuffer.address.hostAddress} socketAddress:${(udpBuffer.socketAddress as java.net.InetSocketAddress)}")
+                println("UDPEngine.run222")
+                imcListenerManager.onMessage(this@UDPEngine,String(udpBuffer.data.copyOfRange(0,udpBuffer.length)))
+                send(udpBuffer)
             }
         }
 
     }
     override fun engineOn(key: String) {
-        serverAddress = URI(key)
-        datagramSocket = DatagramSocket(serverAddress.port)
-        datagramSocket?.reuseAddress = true
-        isConnect = true
-        Thread(receiveRunnable).start()
+        synchronized(syncUDP){
+            if (isConnect()){
+                throw IllegalStateException("请先断开，在重新连接。")
+            }
+            serverAddress = URI(key)
+            datagramSocket = DatagramSocket(0)
+            datagramSocket?.reuseAddress = true
+            datagramSocket?.connect(InetAddress.getByName(serverAddress.host),serverAddress.port)
+            println("UDPEngine.engineOn")
+            isConnect = true
+            Thread(receiveRunnable).start()
+        }
+    }
+
+    fun getLocalPort():Int{
+        return datagramSocket?.localPort?:0;
     }
 
     override fun engineOff() {
@@ -47,12 +63,11 @@ class UDPEngine : IEngine {
         return datagramSocket?.isConnected == true
     }
     override fun send(byteArray: ByteArray): Boolean {
-        println("UDPEngine.send 11")
-        if (!isConnect()){
-            datagramSocket?.connect(InetAddress.getByName(serverAddress.host),serverAddress.port)
-        }
-        println("UDPEngine.send 22")
-        datagramSocket?.send(DatagramPacket(byteArray,byteArray.size))
+        return send(DatagramPacket(byteArray,byteArray.size))
+    }
+
+    private fun send(packet:DatagramPacket):Boolean{
+        datagramSocket?.send(packet)
         return true
     }
 
