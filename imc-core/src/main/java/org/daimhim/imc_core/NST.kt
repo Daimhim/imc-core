@@ -13,7 +13,7 @@ interface NST  {
     fun activeSniffing()
 
     /**
-     * 间隔嗅探
+     * 间隔嗅探,会覆盖主动嗅探
      * @param intervalTime 间隔时间
      * @param count 间隔次数，-1则为无限次
      */

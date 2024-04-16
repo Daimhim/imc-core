@@ -1,5 +1,6 @@
 package org.daimhim.imc_core
 
+import okhttp3.internal.checkDuration
 import okio.ByteString.Companion.toByteString
 import org.java_websocket.WebSocket
 import org.java_websocket.client.WebSocketClient
@@ -14,7 +15,7 @@ import java.net.URI
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
-class JavaWebEngine : IEngine {
+class JavaWebEngine(private val builder:Builder) : IEngine {
     companion object {
         val CONNECTION_UNEXPECTEDLY_CLOSED = -1 //： 连接意外关闭
         val CONNECTION_RESET = -2 //： 连接被重置
@@ -24,9 +25,6 @@ class JavaWebEngine : IEngine {
     private var webSocketClient: WebSocketClientImpl? = null
 
     private val connectTimeout: Int = 5 * 1000
-
-    // 心跳间隔 单位 秒
-    private var heartbeatInterval = 5
 
     // 是否正在连接中
     private var isConnecting = false
@@ -104,7 +102,9 @@ class JavaWebEngine : IEngine {
                 }
                 webSocketClient = WebSocketClientImpl(
                     URI(finalUrl),
-                    timeout = connectTimeout
+                    timeout = connectTimeout,
+                    rescueEnable = builder.rescueEnable(),
+                    nst = builder.nst(),
                 )
             }
             // 已连接，是否需要重置URL
@@ -119,7 +119,8 @@ class JavaWebEngine : IEngine {
             }
             // 初始化状态
             webSocketClient?.javaWebSocketListener = javaWebsocketListener
-            webSocketClient?.connectionLostTimeout = heartbeatInterval
+            webSocketClient?.connectionLostTimeout = builder.minHeartbeatInterval
+            webSocketClient?.maxReconnectDelay = builder.maxReconnectDelay.toLong()
             webSocketClient?.connect()
             isConnecting = true
             isResetting = false
@@ -201,11 +202,12 @@ class JavaWebEngine : IEngine {
 
     override fun onChangeMode(mode: Int) {
         Timber.i("onChangeMode $mode")
-        if (heartbeatInterval == mode) {
-            return
+        // 心跳间隔 单位 秒
+        if (mode == 0){
+            webSocketClient?.connectionLostTimeout = builder.minHeartbeatInterval
+        }else{
+            webSocketClient?.connectionLostTimeout = builder.maxHeartbeatInterval
         }
-        heartbeatInterval = mode
-        webSocketClient?.connectionLostTimeout = heartbeatInterval
     }
 
     override fun onNetworkChange(networkState: Int) {
@@ -225,6 +227,8 @@ class JavaWebEngine : IEngine {
         serverUri: URI,
         httpHeaders: Map<String, String> = mutableMapOf(),
         timeout: Int = 0,
+        private val rescueEnable: Boolean,
+        private val nst: NST? = null,
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
         var javaWebSocketListener: JavaWebSocketListener? = null
         val rapidResponseForce = RapidResponseForceV2()
@@ -300,22 +304,8 @@ class JavaWebEngine : IEngine {
             }
             // 停止心跳
             stopConnectionLostTimer()
-            // 是否启动了 自动抢救
-            if (!rescueEnable){
-                return
-            }
-            // 连接结果初始化
-            synchronized(syncConnectionLost){
-                isConnecting_Automatically = false
-            }
-            // 初次还是多次
-            if (isAutomaticallyConnecting){
-                // 连接已经过了
-                waitingNextAutomaticConnection(reconnectDelay)
-                return
-            }
-            // 初次
-            startAutoConnect()
+            // z自动重连
+            abnormalDisconnectionAndAutomaticReconnection()
         }
 
         override fun onError(ex: Exception) {
@@ -325,22 +315,8 @@ class JavaWebEngine : IEngine {
             }
             // 停止心跳
             stopConnectionLostTimer()
-            // 是否启动了 自动抢救
-            if (!rescueEnable){
-                return
-            }
-            // 连接结果初始化
-            synchronized(syncConnectionLost){
-                isConnecting_Automatically = false
-            }
-            // 初次还是多次
-            if (isAutomaticallyConnecting){
-                // 连接已经过了
-                waitingNextAutomaticConnection(reconnectDelay)
-                return
-            }
-            // 初次
-            startAutoConnect()
+            // z自动重连
+            abnormalDisconnectionAndAutomaticReconnection()
         }
 
         override fun onPreparePing(conn: WebSocket?): PingFrame {
@@ -457,10 +433,6 @@ class JavaWebEngine : IEngine {
                 isClosed = false
             }
         }
-        /***
-         * 抢救启用
-         */
-        var rescueEnable = true
         /**
          * 正在抢救中
          */
@@ -478,6 +450,28 @@ class JavaWebEngine : IEngine {
         private val initReconnectDelay = 1000L
         internal var reconnectDelay = initReconnectDelay  // Reconnect delay, starts at 1
         var maxReconnectDelay = 128_1000L
+
+        /**
+         * 异常断开 并启动自动重连
+         */
+        private fun abnormalDisconnectionAndAutomaticReconnection(){
+            // 是否启动了 自动抢救
+            if (!rescueEnable){
+                return
+            }
+            // 连接结果初始化
+            synchronized(syncConnectionLost){
+                isConnecting_Automatically = false
+            }
+            // 初次还是多次
+            if (isAutomaticallyConnecting){
+                // 连接已经过了
+                waitingNextAutomaticConnection(reconnectDelay)
+                return
+            }
+            // 初次
+            startAutoConnect()
+        }
 
         fun startAutoConnect(){
             Timber.i("开始抢救 isConnecting_Automatically:${isConnecting_Automatically} ${isAutomaticallyConnecting} isOpen:${isOpen}")
@@ -551,5 +545,59 @@ class JavaWebEngine : IEngine {
         fun onError(ex: Exception)
         fun onPreparePing()
         fun onWebsocketPong()
+    }
+
+    class Builder {
+        internal var javaWebEngine: JavaWebEngine? = null
+        internal var maxHeartbeatInterval = 45 * 1000
+        internal var minHeartbeatInterval = 5 * 1000
+        internal var maxReconnectDelay = 128 * 1000
+        internal var debug = false
+        internal var rescueEnable = true
+        internal var nst  : NST? = null
+        internal var imcLogFactory: IIMCLogFactory? = null
+
+        /**
+         *
+         * @return 为IMC提供的JavaWebEngine客户端
+         */
+        fun javaWebEngine(): JavaWebEngine =
+            javaWebEngine ?: JavaWebEngine
+                .Builder()
+                .build()
+
+        fun javaWebEngine(javaWebEngine: JavaWebEngine) = apply {
+            this.javaWebEngine = javaWebEngine
+        }
+
+        fun setIMCLog(imcLogFactory: IIMCLogFactory) = apply {
+            this.imcLogFactory = imcLogFactory
+        }
+
+        fun heartbeatInterval(min: Long, max: Long, unit: TimeUnit) = apply {
+            minHeartbeatInterval = checkDuration("minHeartbeatInterval", min, unit)
+            maxHeartbeatInterval = checkDuration("maxHeartbeatInterval", max, unit)
+        }
+
+        fun maxReconnectDelay(delay: Long, unit: TimeUnit) = apply {
+            maxReconnectDelay = checkDuration("maxReconnectDelay", delay, unit)
+        }
+
+        fun debug(debug: Boolean) = apply {
+            this.debug = debug
+        }
+
+        fun debug(): Boolean = debug
+
+        fun nst(nst:NST) = apply { this.nst = nst  }
+        fun nst() = nst
+
+        fun rescueEnable(rescueEnable:Boolean) = apply { this.rescueEnable = rescueEnable  }
+        fun rescueEnable() = rescueEnable
+
+        fun build(): JavaWebEngine {
+            IMCLog.setIIMCLogFactory(imcLogFactory)
+            return JavaWebEngine(this)
+        }
     }
 }
