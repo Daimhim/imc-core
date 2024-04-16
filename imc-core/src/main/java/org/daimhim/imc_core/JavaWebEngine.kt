@@ -89,6 +89,10 @@ class JavaWebEngine : IEngine {
     }
 
     override fun engineOn(key: String) {
+        val sockConnST = SockConnST()
+        sockConnST.isNetworkAvailable(""){
+
+        }
         // 更换URL
         synchronized(syncJWE){
             Timber.i("engineOn ${webSocketClient == null}")
