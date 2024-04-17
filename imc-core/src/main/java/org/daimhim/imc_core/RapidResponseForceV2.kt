@@ -223,8 +223,7 @@ class RapidResponseForceV2(
                             }
                         }
                         val comparable = statePair.second.any as Comparable<Pair<String, Any?>>?
-                        target?.let { comparable?.compareTo(it.childId to it) }
-
+                        comparable?.compareTo(statePair.second.childId to target)
                     }
                 }
                 // 操作未完成
