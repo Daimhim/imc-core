@@ -3,6 +3,9 @@ package org.daimhim.imc_core
 import timber.multiplatform.log.Timber
 import java.lang.ref.WeakReference
 import java.util.*
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.Comparator
@@ -10,6 +13,7 @@ import kotlin.Comparator
 class RapidResponseForceV2(
     private val MAX_TIMEOUT_TIME: Long = 5 * 1000,
     private val groupId: String = makeOnlyId(),
+    private val executors: ExecutorService = Executors.newCachedThreadPool()
 ) {
     companion object{
         private val operationTasksQueue = LinkedBlockingQueue<Pair<Int,WrapOrderState>>()
@@ -26,6 +30,7 @@ class RapidResponseForceV2(
             lastOnlyId = nowLastOnlyId
             return lastOnlyId.toString()
         }
+
         private val MAXIMUM_IDLE_TIME = 25 * 1000L
 
         /**
@@ -34,9 +39,11 @@ class RapidResponseForceV2(
         private val RRF_INCREASE = 0
         private val RRF_DELETE = 1
         private val RRF_MODIFY = 2
-        private val RRF_QUERY = 3
+        private val RRF_DELETE_QUERY = 3
         //超时回调队列
         private val timeoutCallbackMap = mutableMapOf<String,WeakReference<Comparable<Pair<String,Any?>>>>()
+        // 取消回调队列
+        private val cancelCallbackMap = mutableMapOf<String,WeakReference<Comparable<Pair<String,Any?>>>>()
         private val syncRRF = Any()
 
         /**
@@ -67,11 +74,49 @@ class RapidResponseForceV2(
         startProcessor()
     }
 
+    /**
+     * 解除并获取
+     */
+    fun unRegisterAndGet(id: String,call: Comparable<Pair<String,Any?>>) {
+        operationTasksQueue.add(RRF_DELETE_QUERY to WrapOrderState(groupId = groupId, childId = id, any = object : Comparable<Pair<String,Any?>>{
+            override fun compareTo(other: Pair<String, Any?>): Int {
+                return executors.submit(object : Callable<Int>{
+                    override fun call(): Int {
+                        return call.compareTo(other)
+                    }
+                }).get()
+            }
+
+        }))
+    }
+
     fun timeoutCallback(call: Comparable<Pair<String,Any?>>) {
         synchronized(syncRRF) {
-            timeoutCallbackMap.put(groupId, WeakReference(call))
+            timeoutCallbackMap.put(groupId, WeakReference(object : Comparable<Pair<String,Any?>>{
+                override fun compareTo(other: Pair<String, Any?>): Int {
+                    return executors.submit(object : Callable<Int>{
+                        override fun call(): Int {
+                            return call.compareTo(other)
+                        }
+                    }).get()
+                }
+            }))
         }
     }
+    fun cancelCallbackMap(call: Comparable<Pair<String,Any?>>) {
+        synchronized(syncRRF) {
+            cancelCallbackMap.put(groupId, WeakReference(object : Comparable<Pair<String,Any?>>{
+                override fun compareTo(other: Pair<String, Any?>): Int {
+                    return executors.submit(object : Callable<Int>{
+                        override fun call(): Int {
+                            return call.compareTo(other)
+                        }
+                    }).get()
+                }
+            }))
+        }
+    }
+
     class WrapOrderState(
         val groupId: String,
         val childId: String,
@@ -108,7 +153,7 @@ class RapidResponseForceV2(
             var remainingTime = 0L
             while (true){
                 // 没有操作 没有任务 使用全局休眠时间
-                if (localWaitingTime <= 0 || (operationTasksQueue.isEmpty() && taskToBeExecuted.isEmpty())){
+                if (operationTasksQueue.isEmpty() && taskToBeExecuted.isEmpty()){
                     localWaitingTime = MAXIMUM_IDLE_TIME
                 }
                 Timber.i("当前操作队列：${operationTasksQueue.size} 当前待执行任务：${taskToBeExecuted.size} 当前休眠时间:${localWaitingTime}")
@@ -123,11 +168,63 @@ class RapidResponseForceV2(
                         taskToBeExecuted.add(statePair.second)
                     }
                     RRF_DELETE->{ //删除
+                        // 移除回调
                         val filterIndexed = taskToBeExecuted.filter { wrapOrderState ->
                             wrapOrderState.groupId == statePair.second.groupId
                                     && wrapOrderState.childId == statePair.second.childId
                         }
                         taskToBeExecuted.removeAll(filterIndexed)
+                        for (cancelWOS in filterIndexed) {
+                            try {
+                                val get = cancelCallbackMap[cancelWOS.groupId]?.get()
+                                if (get == null){
+                                    cancelCallbackMap.remove(cancelWOS.groupId)
+                                    continue
+                                }
+                                Timber.i("deleteWOS ${cancelWOS.childId}")
+                                get.compareTo(cancelWOS.childId to cancelWOS.any)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                    }
+                    RRF_DELETE_QUERY->{ // 查询并删除
+                        var target : WrapOrderState? = null
+                        val iterator = operationTasksQueue.iterator()
+                        var item : Pair<Int,WrapOrderState>
+                        while (iterator.hasNext()){
+                            item = iterator.next()
+                            if (statePair.second.groupId != item.second.groupId
+                                || statePair.second.childId != item.second.childId){
+                                continue
+                            }
+                            iterator.remove()
+                            if (item.first == RRF_INCREASE){
+                                target = item.second
+                            }
+                        }
+                        // 移除回调
+                        val filterIndexed = taskToBeExecuted.filter { wrapOrderState ->
+                            wrapOrderState.groupId == statePair.second.groupId
+                                    && wrapOrderState.childId == statePair.second.childId
+                        }
+                        taskToBeExecuted.removeAll(filterIndexed)
+                        for (cancelWOS in filterIndexed) {
+                            try {
+                                val get = cancelCallbackMap[cancelWOS.groupId]?.get()
+                                if (get == null){
+                                    cancelCallbackMap.remove(cancelWOS.groupId)
+                                    continue
+                                }
+                                Timber.i("deleteWOS ${cancelWOS.childId}")
+                                get.compareTo(cancelWOS.childId to cancelWOS.any)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                        val comparable = statePair.second.any as Comparable<Pair<String, Any?>>?
+                        target?.let { comparable?.compareTo(it.childId to it) }
+
                     }
                 }
                 // 操作未完成
@@ -159,27 +256,22 @@ class RapidResponseForceV2(
                     return@filter false
                 }
                 Timber.i("删除超时任务${Arrays.toString(deleteWOSs.toTypedArray())} 当前休眠时间：${localWaitingTime}")
-                //从来源删除
-                taskToBeExecuted.removeAll(deleteWOSs)
-                synchronized(syncRRF) {
-                    for (deleteWOS in deleteWOSs) {
-                        try {
-                            val get = timeoutCallbackMap[deleteWOS.groupId]?.get()
-                            if (get == null){
-                                timeoutCallbackMap.remove(deleteWOS.groupId)
-                                continue
-                            }
-                            Timber.i("deleteWOS ${deleteWOS.childId}")
-                            Thread(object : Runnable{
-                                override fun run() {
-                                    get.compareTo(deleteWOS.childId to deleteWOS.any)
-                                }
-                            }).start()
-                        } catch (e: Exception) {
-                            e.printStackTrace()
+                for (deleteWOS in deleteWOSs) {
+                    try {
+                        val get = timeoutCallbackMap[deleteWOS.groupId]?.get()
+                        if (get == null){
+                            timeoutCallbackMap.remove(deleteWOS.groupId)
+                            continue
                         }
+                        Timber.i("deleteWOS ${deleteWOS.childId}")
+
+                        get.compareTo(deleteWOS.childId to deleteWOS.any)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
                 }
+                //从来源删除
+                taskToBeExecuted.removeAll(deleteWOSs)
                 // 记录本次时间
                 recently = System.currentTimeMillis()
             }
