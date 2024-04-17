@@ -12,7 +12,7 @@ class UDPUnitTest {
 
 //        iEngine.engineOn("http://192.168.2.22:8888")
 //        iEngine.engineOn("http://127.0.0.1:8888")
-        iEngine.engineOn("http://wss.qgbtech.cn:3000")
+        iEngine.engineOn("http://60.204.170.16:3000")
         iEngine.addIMCListener(object :V2IMCListener{
             override fun onMessage(text: String) {
                 println("UDPUnitTest.onMessage text:${text}")
