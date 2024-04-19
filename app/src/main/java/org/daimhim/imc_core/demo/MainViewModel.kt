@@ -7,12 +7,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okio.ByteString
 import org.daimhim.imc_core.*
 import timber.multiplatform.log.Timber
-import java.net.URI
 
 class MainViewModel : ViewModel() {
 
@@ -39,7 +35,10 @@ class MainViewModel : ViewModel() {
 //        .customHeartbeat(QGBHeartbeat())
 //        .build()
 
-    private var iEngine  = JavaWebEngine()
+    private var iEngine  = JavaWebEngine
+        .Builder()
+        .setIMCLog(TimberIMCLog("11111111111111111111"))
+        .build()
     init {
         iEngine.setIMCStatusListener(object : IMCStatusListener {
 
@@ -130,7 +129,7 @@ class MainViewModel : ViewModel() {
     }
 
     fun setForeground(foreground:Boolean){
-        iEngine.onChangeMode(if (foreground) 5 else 45)
+        iEngine.onChangeMode(if (foreground) 0 else 1)
     }
     fun onNetworkChange(networkState:Int){
         iEngine.onNetworkChange(networkState)

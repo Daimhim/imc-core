@@ -52,4 +52,5 @@ dependencies {
     implementation("org.java-websocket:Java-WebSocket:1.5.4")
     implementation("com.google.android.gms:play-services-cronet:18.0.1")
     implementation("org.chromium.net:cronet-api:108.5359.79")
+    testImplementation("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.6.3")
 }

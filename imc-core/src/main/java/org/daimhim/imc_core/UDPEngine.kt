@@ -6,7 +6,7 @@ import java.net.InetAddress
 import java.net.URI
 
 class UDPEngine : IEngine {
-    private var serverAddress : URI = URI.create("http://127.0.0.1:80")
+    private var serverAddress : URI = URI.create("http://127.0.0.1:0")
     private var isConnect = false
     private var datagramSocket:DatagramSocket? = null
     private val syncUDP = Any()
@@ -18,11 +18,7 @@ class UDPEngine : IEngine {
             while (isConnect){
                 udpBuffer = DatagramPacket(data,data.size)
                 datagramSocket?.receive(udpBuffer)
-                println("UDPEngine.run111")
-                println("run address:${udpBuffer.address.hostAddress} socketAddress:${(udpBuffer.socketAddress as java.net.InetSocketAddress)}")
-                println("UDPEngine.run222")
                 imcListenerManager.onMessage(this@UDPEngine,String(udpBuffer.data.copyOfRange(0,udpBuffer.length)))
-                send(udpBuffer)
             }
         }
 

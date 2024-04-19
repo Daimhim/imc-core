@@ -5,6 +5,9 @@ object IMCLog {
     internal fun setIIMCLogFactory(imcLog:IIMCLogFactory?){
         this.imcLog = imcLog
     }
+    fun testSetIIMCLogFactory(imcLog:IIMCLogFactory?){
+        this.imcLog = imcLog
+    }
     fun v(t: Throwable?){
         imcLog?.v(t)
     }
