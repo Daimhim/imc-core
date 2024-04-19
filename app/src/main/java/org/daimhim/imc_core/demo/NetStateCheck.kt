@@ -2,6 +2,7 @@ package org.daimhim.imc_core.demo
 
 import com.custom.socket_connect.INetConnST
 import com.custom.socket_connect.NetCheckState
+import org.daimhim.imc_core.NetCheckConfig
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.InetAddress
@@ -27,10 +28,7 @@ class NetStateCheck : INetConnST {
      * @param callback 检测回调 ping:true成功，false失败；dns:true成功，false失败
      */
     override fun dnsPingResult(
-        address: String,
-        count: Int,
-        size: Int,
-        timeout: Long,
+      config: NetCheckConfig,
         callback: (ping: Boolean, dns: Boolean) -> Unit
     ) {
         var pingResult = false
