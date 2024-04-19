@@ -2,8 +2,16 @@ package org.daimhim.imc_core.demo
 
 import com.custom.socket_connect.INetDetect
 import com.custom.socket_connect.NetCheckState
+import org.daimhim.imc_core.IDetectionResults
+import org.daimhim.imc_core.NST
+import java.util.concurrent.TimeUnit
 
-class NetCheckDetect : INetDetect {
+val UNKNOWN = 0
+val GOOD = 1
+val BAD = -1
+val OFFLINE = -2
+
+class NetCheckDetect : NST {
 
     fun checkNetState(callback: (state: Int) -> Unit) {
         var state = NetCheckState.UNKNOWN.ordinal
@@ -26,14 +34,24 @@ class NetCheckDetect : INetDetect {
         }
     }
 
-    override fun netRequest() {
+    override fun activeSniffing() {
     }
 
-    override fun onNetFailure() {
+    override fun intervalSniffing(intervalTime: TimeUnit, count: Int) {
     }
 
-    override fun onNetSuccess() {
+    override fun cancelSniffing() {
     }
 
+    override fun getLastResult(): Int {
 
+    }
+
+    override fun register(detectionResults: IDetectionResults) {
+
+    }
+
+    override fun unregister(detectionResults: IDetectionResults) {
+
+    }
 }
