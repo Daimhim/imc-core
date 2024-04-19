@@ -9,8 +9,9 @@
     <EditText
             android:id="@+id/textview_first"
             android:hint="请输入用户名"
-            android:text="https://747eecb5.r7.cpolar.top"
+            android:text="https://69b33c8f.r7.cpolar.top"
             android:layout_marginTop="24dp"
+            android:maxLines="2"
             android:layout_marginHorizontal="12dp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

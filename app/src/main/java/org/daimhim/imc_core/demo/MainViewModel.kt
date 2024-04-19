@@ -37,6 +37,7 @@ class MainViewModel : ViewModel() {
 
     private var iEngine  = JavaWebEngine
         .Builder()
+        .setIMCLog(TimberIMCLog("11111111111111111111"))
         .build()
     init {
         iEngine.setIMCStatusListener(object : IMCStatusListener {

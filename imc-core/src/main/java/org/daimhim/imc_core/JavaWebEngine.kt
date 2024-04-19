@@ -67,9 +67,8 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
 
         override fun onError(ex: Exception) {
             Timber.i(ex, "onError")
-            imcStatusListener
-                ?.connectionLost(ex)
-            forceClose(CONNECTION_UNEXPECTEDLY_CLOSED, "${ex.message}")
+            imcStatusListener?.connectionLost(ex)
+//            forceClose(CONNECTION_UNEXPECTEDLY_CLOSED, "${ex.message}")
             // 重置中
             if (isResetting) {
                 engineOn(currentKey)
@@ -215,6 +214,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
     }
 
     override fun makeConnection() {
+        webSocketClient?.resetStartAutoConnect()
     }
 
     /***
@@ -298,10 +298,11 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         }
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {
-            javaWebSocketListener?.onClose(code, reason, remote)
             if (isClosed){
+                javaWebSocketListener?.onClose(code, reason, remote)
                 return
             }
+            javaWebSocketListener?.onError(IllegalStateException("code:${code} reason${reason} remote${remote}"))
             // 停止心跳
             stopConnectionLostTimer()
             // z自动重连
@@ -345,7 +346,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         override fun setConnectionLostTimeout(connectionLostTimeout: Int) {
 //            Timber.i("setConnectionLostTimeout ${connectionLostTimeout}")
             synchronized(syncConnectionLost) {
-                this.connectionLostTimeout = TimeUnit.SECONDS.toNanos(connectionLostTimeout.toLong())
+                this.connectionLostTimeout = TimeUnit.MILLISECONDS.toNanos(connectionLostTimeout.toLong())
                 if (this.connectionLostTimeout <= 0) {
                     cancelConnectionLostTimer()
                     return
@@ -383,7 +384,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
 
         private fun restartConnectionLostTimer() {
             val timeOut = TimeUnit.NANOSECONDS.toMillis(connectionLostTimeout)
-//            Timber.i("restartConnectionLostTimer ${timeOut}")
+            Timber.i("restartConnectionLostTimer ${timeOut}")
             cancelConnectionLostTimer()
             rapidResponseForce.register(HEARTBEAT_INTERVAL, timeOut = timeOut)
         }
@@ -495,7 +496,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         }
 
         private fun waitingNextAutomaticConnection(delay:Long){
-            Timber.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection}")
+            Timber.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection} reconnectDelay:$reconnectDelay")
             synchronized(syncConnectionLost){
                 if (isWaitingNextAutomaticConnection){
                     return
