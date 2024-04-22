@@ -1,14 +1,12 @@
 package com.custom.socket_connect
 
+import org.daimhim.imc_core.NetCheckConfig
 import org.jetbrains.annotations.Nullable
 
 interface INetConnST {
 
 
-    fun dnsPingResult(address: String,
-                       count: Int,
-                       size: Int,
-                       timeout: Long,callback: (ping: Boolean, dns: Boolean) -> Unit)
+    fun dnsPingResult(config: NetCheckConfig, callback: (ping: Boolean, dns: Boolean) -> Unit)
 
     /**
      * 检测网络连接状态

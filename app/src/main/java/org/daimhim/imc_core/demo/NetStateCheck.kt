@@ -28,18 +28,18 @@ class NetStateCheck : INetConnST {
      * @param callback 检测回调 ping:true成功，false失败；dns:true成功，false失败
      */
     override fun dnsPingResult(
-      config: NetCheckConfig,
+        config: NetCheckConfig,
         callback: (ping: Boolean, dns: Boolean) -> Unit
     ) {
         var pingResult = false
         var dnsResult = false
         try {
             //dns域名解析，检测该域名是否可达
-            dns(address).get(timeout, TimeUnit.MILLISECONDS).also {
+            dns(config.address).get(config.timeout, TimeUnit.MILLISECONDS).also {
                 dnsResult = it
             }
             //ping检测只获取是否成功，无关具体结果
-            ping(address, count, size, timeout).get(timeout, TimeUnit.MILLISECONDS)?.also {
+            ping(config.address, config.count, config.size, config.timeout).get(timeout, TimeUnit.MILLISECONDS)?.also {
                 pingResult = it.first == 100
             }
         } catch (e: Exception) {
