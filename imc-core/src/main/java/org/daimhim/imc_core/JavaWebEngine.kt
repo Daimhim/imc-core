@@ -104,6 +104,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
                     timeout = connectTimeout,
                     rescueEnable = builder.rescueEnable(),
                     nst = builder.nst(),
+                    customHeartbeat = builder.customHeartbeat(),
                 )
             }
             // 已连接，是否需要重置URL
@@ -229,6 +230,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         timeout: Int = 0,
         private val rescueEnable: Boolean,
         private val nst: NST? = null,
+        private val customHeartbeat: CustomHeartbeat? = null,
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
         var javaWebSocketListener: JavaWebSocketListener? = null
         val rapidResponseForce = RapidResponseForceV2()
@@ -405,7 +407,17 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
             if (!websocketRunning) {
                 return false
             }
-            webSocket.sendPing()
+            when{
+                customHeartbeat == null ->{
+                    sendPing()
+                }
+                customHeartbeat.byteOrString()->{
+                    send(customHeartbeat.byteHeartbeat())
+                }
+                else->{
+                    send(customHeartbeat.stringHeartbeat())
+                }
+            }
             Timber.i("executeConnectionLostDetection sendPing222")
             return true
         }
@@ -557,6 +569,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         internal var rescueEnable = true
         internal var nst  : NST? = null
         internal var imcLogFactory: IIMCLogFactory? = null
+        internal var customHeartbeat : CustomHeartbeat? = null
 
         /**
          *
@@ -596,6 +609,12 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         fun rescueEnable(rescueEnable:Boolean) = apply { this.rescueEnable = rescueEnable  }
         fun rescueEnable() = rescueEnable
 
+        fun customHeartbeat(): CustomHeartbeat =
+            customHeartbeat ?: DefCustomHeartbeat()
+
+        fun customHeartbeat(customHeartbeat: CustomHeartbeat) = apply {
+            this.customHeartbeat = customHeartbeat
+        }
         fun build(): JavaWebEngine {
             IMCLog.setIIMCLogFactory(imcLogFactory)
             return JavaWebEngine(this)
