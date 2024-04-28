@@ -15,7 +15,7 @@ class UDPEngine : IEngine {
         override fun run() {
             val data = ByteArray(1024)
             var udpBuffer : DatagramPacket
-            while (isConnect){
+            while (isConnect && thread?.isInterrupted == true){
                 udpBuffer = DatagramPacket(data,data.size)
                 datagramSocket?.receive(udpBuffer)
                 imcListenerManager.onMessage(this@UDPEngine,String(udpBuffer.data.copyOfRange(0,udpBuffer.length)))
@@ -23,6 +23,8 @@ class UDPEngine : IEngine {
         }
 
     }
+    private var thread : Thread? = null
+
     override fun engineOn(key: String) {
         synchronized(syncUDP){
             if (isConnect()){
@@ -34,7 +36,8 @@ class UDPEngine : IEngine {
             datagramSocket?.connect(InetAddress.getByName(serverAddress.host),serverAddress.port)
             println("UDPEngine.engineOn")
             isConnect = true
-            Thread(receiveRunnable).start()
+            thread = Thread(receiveRunnable)
+            thread?.start()
         }
     }
 
@@ -43,7 +46,9 @@ class UDPEngine : IEngine {
     }
 
     override fun engineOff() {
+        thread?.interrupt()
         datagramSocket?.close()
+        thread = null
         datagramSocket = null
     }
 

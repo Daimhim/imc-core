@@ -15,7 +15,7 @@ import java.net.URI
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
-class JavaWebEngine(private val builder:Builder) : IEngine {
+class JavaWebEngine(private val builder: Builder) : IEngine {
     companion object {
         val CONNECTION_UNEXPECTEDLY_CLOSED = -1 //： 连接意外关闭
         val CONNECTION_RESET = -2 //： 连接被重置
@@ -75,28 +75,23 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
             }
         }
 
-        override fun onPreparePing() {
-//            Timber.i("onPreparePing")
-        }
-
-        override fun onWebsocketPong() {
-//            Timber.i("onWebsocketPong")
-        }
 
     }
 
     override fun engineOn(key: String) {
         // 更换URL
-        synchronized(syncJWE){
+        synchronized(syncJWE) {
             Timber.i("engineOn ${webSocketClient == null}")
             if (webSocketClient == null) {
                 val finalUrl: String = when {
                     key.startsWith("http:", ignoreCase = true) -> {
                         "ws:${key.substring(5)}"
                     }
+
                     key.startsWith("https:", ignoreCase = true) -> {
                         "wss:${key.substring(6)}"
                     }
+
                     else -> key
                 }
                 webSocketClient = WebSocketClientImpl(
@@ -141,7 +136,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         webSocketClient?.closeBlocking()
         webSocketClient?.javaWebSocketListener = null
         webSocketClient = null
-        synchronized(syncJWE){
+        synchronized(syncJWE) {
             isConnecting = false
             isResetting = false
         }
@@ -157,25 +152,31 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         webSocketClient?.javaWebSocketListener?.onClose(code, reason, false)
     }
 
-    fun isConnect(): Boolean {
+    internal fun isConnect(): Boolean {
         return engineState() == IEngineState.ENGINE_OPEN
     }
 
     override fun engineState(): Int {
         val readyState = webSocketClient?.readyState ?: ReadyState.NOT_YET_CONNECTED
-        return if (readyState == ReadyState.OPEN){
+        return if (readyState == ReadyState.OPEN) {
             IEngineState.ENGINE_OPEN
-        }else{
+        } else {
             IEngineState.ENGINE_CLOSED
         }
     }
 
     override fun send(byteArray: ByteArray): Boolean {
+        if (!isConnect()) {
+            makeConnection()
+        }
         webSocketClient?.send(byteArray)
         return engineState() == IEngineState.ENGINE_OPEN
     }
 
     override fun send(text: String): Boolean {
+        if (!isConnect()) {
+            makeConnection()
+        }
         webSocketClient?.send(text)
         return engineState() == IEngineState.ENGINE_OPEN
     }
@@ -203,9 +204,9 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
     override fun onChangeMode(mode: Int) {
         Timber.i("onChangeMode $mode")
         // 心跳间隔 单位 秒
-        if (mode == 0){
+        if (mode == 0) {
             webSocketClient?.connectionLostTimeout = builder.minHeartbeatInterval
-        }else{
+        } else {
             webSocketClient?.connectionLostTimeout = builder.maxHeartbeatInterval
         }
     }
@@ -235,13 +236,15 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         var javaWebSocketListener: JavaWebSocketListener? = null
         val rapidResponseForce = RapidResponseForceV2()
         private var isClosed = false
+
         // 最后一次心跳响应
         private var lastPong = System.nanoTime()
 
         // 心跳间隔
         val HEARTBEAT_INTERVAL = "HEARTBEAT_INTERVAL"
+
         //定时器
-        private val AUTO_RECONNECT  = "AUTO_RECONNECT"
+        private val AUTO_RECONNECT = "AUTO_RECONNECT"
 
         // 心跳超时
         private val timedTasks = object : Comparable<Pair<String, Any?>> {
@@ -267,7 +270,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
                     synchronized(syncConnectionLost) {
                         restartConnectionLostTimer()
                     }
-                } else if (other.first == AUTO_RECONNECT){
+                } else if (other.first == AUTO_RECONNECT) {
                     synchronized(syncConnectionLost) {
                         isWaitingNextAutomaticConnection = false
                     }
@@ -277,6 +280,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
             }
 
         }
+
         init {
             rapidResponseForce.timeoutCallback(this.timedTasks)
         }
@@ -300,7 +304,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         }
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {
-            if (isClosed){
+            if (isClosed) {
                 javaWebSocketListener?.onClose(code, reason, remote)
                 return
             }
@@ -313,7 +317,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
 
         override fun onError(ex: Exception) {
             javaWebSocketListener?.onError(ex)
-            if (isClosed){
+            if (isClosed) {
                 return
             }
             // 停止心跳
@@ -322,15 +326,9 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
             abnormalDisconnectionAndAutomaticReconnection()
         }
 
-        override fun onPreparePing(conn: WebSocket?): PingFrame {
-            javaWebSocketListener?.onPreparePing()
-            return super.onPreparePing(conn)
-        }
-
         override fun onWebsocketPong(conn: WebSocket?, f: Framedata?) {
 //            Timber.i("onWebsocketPong updateLastPong")
             updateLastPong()
-            javaWebSocketListener?.onWebsocketPong()
             super.onWebsocketPong(conn, f)
         }
 
@@ -392,7 +390,7 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         }
 
         private fun executeConnectionLostDetection(webSocket: WebSocket, minimumPongTime: Long): Boolean {
-            Timber.i("executeConnectionLostDetection sendPing111")
+            Timber.i("executeConnectionLostDetection sendPing111 ${customHeartbeat == null}")
 //            Timber.i("executeConnectionLostDetection")
             if (getLastPong() < minimumPongTime) {
                 webSocket.closeConnection(
@@ -407,14 +405,16 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
             if (!websocketRunning) {
                 return false
             }
-            when{
-                customHeartbeat == null ->{
+            when {
+                customHeartbeat == null -> {
                     sendPing()
                 }
-                customHeartbeat.byteOrString()->{
+
+                customHeartbeat.byteOrString() -> {
                     send(customHeartbeat.byteHeartbeat())
                 }
-                else->{
+
+                else -> {
                     send(customHeartbeat.stringHeartbeat())
                 }
             }
@@ -435,17 +435,18 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
 
         override fun close() {
             super.close()
-            synchronized(syncConnectionLost){
+            synchronized(syncConnectionLost) {
                 isClosed = true
             }
         }
 
         override fun connect() {
             super.connect()
-            synchronized(syncConnectionLost){
+            synchronized(syncConnectionLost) {
                 isClosed = false
             }
         }
+
         /**
          * 正在抢救中
          */
@@ -455,10 +456,12 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
          * 连接中状态 连接结果，open/close
          */
         private var isConnecting_Automatically = false
+
         /**
          * 进入等待下一次连接
          */
         private var isWaitingNextAutomaticConnection = false
+
         // 初始值
         private val initReconnectDelay = 1000L
         internal var reconnectDelay = initReconnectDelay  // Reconnect delay, starts at 1
@@ -467,17 +470,17 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         /**
          * 异常断开 并启动自动重连
          */
-        private fun abnormalDisconnectionAndAutomaticReconnection(){
+        private fun abnormalDisconnectionAndAutomaticReconnection() {
             // 是否启动了 自动抢救
-            if (!rescueEnable){
+            if (!rescueEnable) {
                 return
             }
             // 连接结果初始化
-            synchronized(syncConnectionLost){
+            synchronized(syncConnectionLost) {
                 isConnecting_Automatically = false
             }
             // 初次还是多次
-            if (isAutomaticallyConnecting){
+            if (isAutomaticallyConnecting) {
                 // 连接已经过了
                 waitingNextAutomaticConnection(reconnectDelay)
                 return
@@ -486,18 +489,21 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
             startAutoConnect()
         }
 
-        fun startAutoConnect(){
+        /**
+         * 对外 启动自动连接
+         */
+        fun startAutoConnect() {
             Timber.i("开始抢救 isConnecting_Automatically:${isConnecting_Automatically} ${isAutomaticallyConnecting} isOpen:${isOpen}")
-            synchronized(syncConnectionLost){
-                if (isOpen){
+            synchronized(syncConnectionLost) {
+                if (isOpen) {
                     // 不需要抢救
                     return
                 }
-                if (isAutomaticallyConnecting){
+                if (isAutomaticallyConnecting) {
                     //多次启动 直接返回
                     return
                 }
-                if (isConnecting_Automatically){
+                if (isConnecting_Automatically) {
                     // 正在连接 直接返回
                     return
                 }
@@ -507,27 +513,35 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
             }
         }
 
-        private fun waitingNextAutomaticConnection(delay:Long){
+        /**
+         * 等待下一次 自动连接
+         */
+        private fun waitingNextAutomaticConnection(delay: Long) {
             Timber.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection} reconnectDelay:$reconnectDelay")
-            synchronized(syncConnectionLost){
-                if (isWaitingNextAutomaticConnection){
+            synchronized(syncConnectionLost) {
+                if (isWaitingNextAutomaticConnection) {
                     return
                 }
-                if (reconnectDelay < maxReconnectDelay){
-                    reconnectDelay  = delay * 2
+                if (reconnectDelay < maxReconnectDelay) {
+                    reconnectDelay = delay * 2
                 }
                 isWaitingNextAutomaticConnection = true
-                rapidResponseForce.register(AUTO_RECONNECT,null,reconnectDelay)
+                rapidResponseForce.register(AUTO_RECONNECT, null, reconnectDelay)
             }
         }
-        fun resetStartAutoConnect(){
+
+        /**
+         * 重置自动连接，用于更新配置
+         */
+        internal fun resetStartAutoConnect() {
             Timber.i("重置抢救，之前记录${reconnectDelay}")
             stopAutoConnect()
             startAutoConnect()
         }
-        fun stopAutoConnect(){
+
+        fun stopAutoConnect() {
             Timber.i("停止抢救")
-            synchronized(syncConnectionLost){
+            synchronized(syncConnectionLost) {
                 isAutomaticallyConnecting = false
                 isConnecting_Automatically = false
                 isWaitingNextAutomaticConnection = false
@@ -536,10 +550,10 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
             }
         }
 
-        fun startConnect(any: Any?){
+        private fun startConnect(any: Any?) {
             Timber.i("startConnect 111 ${isConnecting_Automatically}")
-            synchronized(syncConnectionLost){
-                if (isConnecting_Automatically){
+            synchronized(syncConnectionLost) {
+                if (isConnecting_Automatically) {
                     return
                 }
                 isConnecting_Automatically = true
@@ -556,8 +570,6 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         fun onMessage(bytes: ByteBuffer)
         fun onClose(code: Int, reason: String?, remote: Boolean)
         fun onError(ex: Exception)
-        fun onPreparePing()
-        fun onWebsocketPong()
     }
 
     class Builder {
@@ -567,9 +579,9 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
         internal var maxReconnectDelay = 128 * 1000
         internal var debug = false
         internal var rescueEnable = true
-        internal var nst  : NST? = null
+        internal var nst: NST? = null
         internal var imcLogFactory: IIMCLogFactory? = null
-        internal var customHeartbeat : CustomHeartbeat? = null
+        internal var customHeartbeat: CustomHeartbeat? = null
 
         /**
          *
@@ -603,18 +615,18 @@ class JavaWebEngine(private val builder:Builder) : IEngine {
 
         fun debug(): Boolean = debug
 
-        fun nst(nst:NST) = apply { this.nst = nst  }
+        fun nst(nst: NST) = apply { this.nst = nst }
         fun nst() = nst
 
-        fun rescueEnable(rescueEnable:Boolean) = apply { this.rescueEnable = rescueEnable  }
+        fun rescueEnable(rescueEnable: Boolean) = apply { this.rescueEnable = rescueEnable }
         fun rescueEnable() = rescueEnable
 
-        fun customHeartbeat(): CustomHeartbeat =
-            customHeartbeat ?: DefCustomHeartbeat()
+        fun customHeartbeat(): CustomHeartbeat? = customHeartbeat
 
         fun customHeartbeat(customHeartbeat: CustomHeartbeat) = apply {
             this.customHeartbeat = customHeartbeat
         }
+
         fun build(): JavaWebEngine {
             IMCLog.setIIMCLogFactory(imcLogFactory)
             return JavaWebEngine(this)

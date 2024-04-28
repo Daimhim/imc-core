@@ -39,9 +39,9 @@ class NetStateCheck : INetConnST {
                 dnsResult = it
             }
             //ping检测只获取是否成功，无关具体结果
-            ping(config.address, config.count, config.size, config.timeout).get(timeout, TimeUnit.MILLISECONDS)?.also {
-                pingResult = it.first == 100
-            }
+//            ping(config.address, config.count, config.size, config.timeout).get(timeout, TimeUnit.MILLISECONDS)?.also {
+//                pingResult = it.first == 100
+//            }
         } catch (e: Exception) {
             e.printStackTrace()
         }

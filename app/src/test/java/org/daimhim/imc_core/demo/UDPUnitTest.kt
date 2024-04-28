@@ -10,10 +10,10 @@ class UDPUnitTest {
         println("UDPUnitTest.addition_isCorrect start")
         val iEngine = UDPEngine()
 
-//        iEngine.engineOn("http://192.168.2.22:8888")
+        iEngine.engineOn("http://192.168.137.1:3390")
 //        iEngine.engineOn("http://127.0.0.1:8888")
 //        iEngine.engineOn("http://60.204.170.16:3000")
-        iEngine.engineOn("http://123.60.90.82:63000")
+//        iEngine.engineOn("http://123.60.90.82:63000")
         iEngine.addIMCListener(object :V2IMCListener{
             override fun onMessage(text: String) {
                 println("UDPUnitTest.onMessage text:${text}")

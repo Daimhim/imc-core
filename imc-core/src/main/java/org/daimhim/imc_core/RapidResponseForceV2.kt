@@ -94,16 +94,22 @@ class RapidResponseForceV2(
     }
 
     /**
-     * @param call 取消的返回
+     * @param call 超时的返回
      *  Pair<String,Any> == id: String, t: Any? = null
      */
-    fun timeoutCallback(call: Comparable<Pair<String,Any?>>) {
+    fun timeoutCallback(call: Comparable<Pair<String,Any?>>?) {
         synchronized(syncRRF) {
+            if (call == null){
+                timeoutCallbackMap.remove(groupId)
+                return@synchronized
+            }
+            val wrCall = WeakReference(call)
             timeoutCallbackMap.put(groupId, WeakReference(object : Comparable<Pair<String,Any?>>{
                 override fun compareTo(other: Pair<String, Any?>): Int {
+                    // get() 非必须
                     return executors.submit(object : Callable<Int>{
                         override fun call(): Int {
-                            return call.compareTo(other)
+                            return wrCall.get()?.compareTo(other)?:0
                         }
                     }).get()
                 }
@@ -115,13 +121,19 @@ class RapidResponseForceV2(
      * @param call 取消的返回
      *  Pair<String,Any> == id: String, t: Any? = null
      */
-    fun cancelCallbackMap(call: Comparable<Pair<String,Any?>>) {
+    fun cancelCallbackMap(call: Comparable<Pair<String,Any?>>?) {
         synchronized(syncRRF) {
+            if (call == null){
+                timeoutCallbackMap.remove(groupId)
+                return@synchronized
+            }
+            val wrCall = WeakReference(call)
             cancelCallbackMap.put(groupId, WeakReference(object : Comparable<Pair<String,Any?>>{
                 override fun compareTo(other: Pair<String, Any?>): Int {
+                    // get() 非必须
                     return executors.submit(object : Callable<Int>{
                         override fun call(): Int {
-                            return call.compareTo(other)
+                            return wrCall.get()?.compareTo(other)?:0
                         }
                     }).get()
                 }
