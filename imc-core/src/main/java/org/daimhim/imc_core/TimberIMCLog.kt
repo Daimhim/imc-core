@@ -4,7 +4,7 @@ import timber.multiplatform.log.CustomTagTree
 import timber.multiplatform.log.Tree
 
 class TimberIMCLog(customTag:String = "IEngine") : IIMCLogFactory {
-    private val tree: Tree = CustomTagTree(customTag)
+    private val tree: Tree = CustomTagTree(customTag,TimberIMCLog::class.java.name,IMCLog::class.java.name)
     override fun v(t: Throwable?) {
         tree.v(t)
     }

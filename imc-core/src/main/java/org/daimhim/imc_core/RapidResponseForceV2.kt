@@ -17,10 +17,10 @@ class RapidResponseForceV2(
         }
         private var lastOnlyId  = System.currentTimeMillis()
         @Synchronized
-        private fun makeOnlyId():String{
+        fun makeOnlyId():String{
             var nowLastOnlyId = System.currentTimeMillis()
-            if (lastOnlyId == nowLastOnlyId) {
-                nowLastOnlyId += 1
+            if (lastOnlyId <= nowLastOnlyId) {
+                nowLastOnlyId = lastOnlyId + 1
             }
             lastOnlyId = nowLastOnlyId
             return lastOnlyId.toString()

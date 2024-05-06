@@ -2,18 +2,16 @@ package org.daimhim.imc_core.demo
 
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.kongqw.network.monitor.NetworkMonitorManager
 import com.kongqw.network.monitor.enums.NetworkState
 import com.kongqw.network.monitor.interfaces.NetworkMonitor
-import com.tencent.mars.sdt.SdtLogic
 import kotlinx.coroutines.launch
 import org.daimhim.imc_core.IEngineState
-import org.daimhim.imc_core.demo.databinding.ActivityMainBinding
 import timber.multiplatform.log.Timber
+import org.daimhim.imc_core.demo.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
     private val _viewModel : MainViewModel  by viewModels()

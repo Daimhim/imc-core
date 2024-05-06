@@ -4,8 +4,11 @@ import okhttp3.internal.checkDuration
 import okio.ByteString.Companion.toByteString
 import org.java_websocket.WebSocket
 import org.java_websocket.client.WebSocketClient
+import org.java_websocket.drafts.Draft
 import org.java_websocket.drafts.Draft_6455
+import org.java_websocket.enums.Opcode
 import org.java_websocket.enums.ReadyState
+import org.java_websocket.enums.Role
 import org.java_websocket.framing.CloseFrame
 import org.java_websocket.framing.Framedata
 import org.java_websocket.framing.PingFrame
@@ -13,7 +16,9 @@ import org.java_websocket.handshake.ServerHandshake
 import timber.multiplatform.log.Timber
 import java.net.URI
 import java.nio.ByteBuffer
+import java.util.*
 import java.util.concurrent.TimeUnit
+import kotlin.collections.ArrayList
 
 class JavaWebEngine(private val builder: Builder) : IEngine {
     companion object {
@@ -233,48 +238,22 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         private val nst: NST? = null,
         private val customHeartbeat: CustomHeartbeat? = null,
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
+
         var javaWebSocketListener: JavaWebSocketListener? = null
         val rapidResponseForce = RapidResponseForceV2()
         private var isClosed = false
 
-        // 最后一次心跳响应
-        private var lastPong = System.nanoTime()
-
-        // 心跳间隔
-        val HEARTBEAT_INTERVAL = "HEARTBEAT_INTERVAL"
-
-        //定时器
-        private val AUTO_RECONNECT = "AUTO_RECONNECT"
 
         // 心跳超时
         private val timedTasks = object : Comparable<Pair<String, Any?>> {
             override fun compareTo(other: Pair<String, Any?>): Int {
                 Timber.i("timeoutCallback ${other.first}")
                 if (other.first == HEARTBEAT_INTERVAL) {
-                    try {
-                        var minimumPongTime: Long
-                        synchronized(syncConnectionLost) {
-                            minimumPongTime = (System.nanoTime() - (connectionLostTimeout * 1.5)).toLong()
-                        }
-
-                        val executeConnectionLostDetection =
-                            executeConnectionLostDetection(connection, minimumPongTime)
-                        if (!executeConnectionLostDetection) {
-                            // 心跳结束
-                            cancelConnectionLostTimer()
-                            return 0
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                    synchronized(syncConnectionLost) {
-                        restartConnectionLostTimer()
-                    }
+                    // 心跳
+                    heartbeatInterval(other)
                 } else if (other.first == AUTO_RECONNECT) {
-                    synchronized(syncConnectionLost) {
-                        isWaitingNextAutomaticConnection = false
-                    }
-                    startConnect(other.second)
+                    // 自动连接
+                    autoReconnect(other)
                 }
                 return 0;
             }
@@ -286,18 +265,21 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         override fun onOpen(handshakedata: ServerHandshake?) {
+            retryingSendingCache()
             updateLastPong()
             stopAutoConnect()
             javaWebSocketListener?.onOpen(handshakedata)
         }
 
         override fun onMessage(message: String) {
+            retryingSendingCache()
             updateLastPong()
             restartConnectionLostTimer()
             javaWebSocketListener?.onMessage(message)
         }
 
         override fun onMessage(bytes: ByteBuffer) {
+            retryingSendingCache()
             updateLastPong()
             restartConnectionLostTimer()
             javaWebSocketListener?.onMessage(bytes)
@@ -326,7 +308,33 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
             abnormalDisconnectionAndAutomaticReconnection()
         }
 
+        override fun close() {
+            super.close()
+            synchronized(syncConnectionLost) {
+                isClosed = true
+                clearCache()
+            }
+        }
+
+        override fun connect() {
+            super.connect()
+            synchronized(syncConnectionLost) {
+                isClosed = false
+            }
+        }
+
+        /*
+         * ------------------------心跳---------------------------------------
+         */
+
+        // 最后一次心跳响应
+        private var lastPong = System.nanoTime()
+
+        // 心跳间隔
+        val HEARTBEAT_INTERVAL = "HEARTBEAT_INTERVAL"
+
         override fun onWebsocketPong(conn: WebSocket?, f: Framedata?) {
+            retryingSendingCache()
 //            Timber.i("onWebsocketPong updateLastPong")
             updateLastPong()
             super.onWebsocketPong(conn, f)
@@ -426,26 +434,42 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
             return lastPong;
         }
 
-        /**
-         * Update the timestamp when the last pong was received
-         */
         fun updateLastPong() {
             this.lastPong = System.nanoTime();
         }
 
-        override fun close() {
-            super.close()
-            synchronized(syncConnectionLost) {
-                isClosed = true
-            }
-        }
+        fun heartbeatInterval(other: Pair<String, Any?>){
+            try {
+                var minimumPongTime: Long
+                synchronized(syncConnectionLost) {
+                    minimumPongTime = (System.nanoTime() - (connectionLostTimeout * 1.5)).toLong()
+                }
 
-        override fun connect() {
-            super.connect()
+                val executeConnectionLostDetection =
+                    executeConnectionLostDetection(connection, minimumPongTime)
+                if (!executeConnectionLostDetection) {
+                    // 心跳结束
+                    cancelConnectionLostTimer()
+                    return
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
             synchronized(syncConnectionLost) {
-                isClosed = false
+                restartConnectionLostTimer()
             }
         }
+        /*
+         * ------------------------心跳---------------------------------------
+         */
+
+
+        /**
+        ------------------------自动连接---------------------------------------
+         */
+
+        //定时器
+        private val AUTO_RECONNECT = "AUTO_RECONNECT"
 
         /**
          * 正在抢救中
@@ -527,6 +551,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
                 }
                 isWaitingNextAutomaticConnection = true
                 rapidResponseForce.register(AUTO_RECONNECT, null, reconnectDelay)
+                Timber.i("等待下一次 111 ${reconnectDelay}")
             }
         }
 
@@ -562,6 +587,114 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
             reconnect()
             Timber.i("startConnect 222")
         }
+
+        private fun autoReconnect(other: Pair<String, Any?>){
+            synchronized(syncConnectionLost) {
+                isWaitingNextAutomaticConnection = false
+            }
+            startConnect(other.second)
+        }
+        /**
+         * ------------------------自动连接--------------------------------------- */
+
+
+        /**
+          ------------------------消息发送缓存--------------------------------------- */
+        private val cacheSync = Any()
+        private val role = Role.CLIENT
+        private val cacheList = mutableListOf<Pair<String,List<Framedata>>>()
+        private val CACHE_SIZE = 8 * 1024
+        private var currentOccupiedSize = 0
+
+        override fun send(text: String?) {
+            if (text.isNullOrEmpty()){
+                return
+            }
+            synchronized(cacheSync){
+                if (isOpen){
+                    super.send(text)
+                    return
+                }
+                addCache(element = draft.createFrames(text, role == Role.CLIENT))
+            }
+        }
+
+        override fun send(data: ByteArray?) {
+            if (isOpen){
+                super.send(data)
+                return
+            }
+            synchronized(cacheSync){
+                addCache(element = draft.createFrames(ByteBuffer.wrap(data), role == Role.CLIENT))
+            }
+        }
+
+        override fun send(bytes: ByteBuffer?) {
+            if (isOpen){
+                super.send(bytes)
+                return
+            }
+            synchronized(cacheSync){
+                addCache(element = draft.createFrames(bytes, role == Role.CLIENT))
+            }
+        }
+
+        @Synchronized
+        private fun addCache(id : String = RapidResponseForceV2.makeOnlyId(),element : List<Framedata>){
+            var lCurrentOccupiedSize = currentOccupiedSize
+            element.forEach {
+                lCurrentOccupiedSize += it.payloadData.capacity()
+            }
+            if (lCurrentOccupiedSize > CACHE_SIZE){
+                cacheList
+                    .removeFirstOrNull()
+                    ?.second
+                    ?.forEach {
+                        lCurrentOccupiedSize -= it.payloadData.capacity()
+                    }
+            }
+            currentOccupiedSize = lCurrentOccupiedSize
+            IMCLog.i("addCache currentOccupiedSize:${currentOccupiedSize}")
+            rapidResponseForce.register(id,null)
+            cacheList.add(id to element)
+        }
+
+        private fun retryingSendingCache(){
+            synchronized(cacheSync){
+                if (cacheList.isEmpty()){
+                    return@synchronized
+                }
+                if (!isOpen){
+                    return@synchronized
+                }
+                var item = cacheList.removeFirstOrNull()
+                while (item != null){
+                    sendFrame(item.second)
+                    item
+                        .second
+                        .forEach {
+                            currentOccupiedSize -= it.payloadData.capacity()
+                        }
+                    IMCLog.i("retryingSendingCache1 currentOccupiedSize:${currentOccupiedSize}")
+                    if (!isOpen){
+                        cacheList.add(0,item)
+                        return@synchronized
+                    }
+                    item = cacheList.removeFirstOrNull()
+                }
+                currentOccupiedSize = 0
+                IMCLog.i("retryingSendingCache2 currentOccupiedSize:${currentOccupiedSize}")
+            }
+        }
+
+        private fun clearCache(){
+            synchronized(cacheSync){
+                cacheList.clear()
+                currentOccupiedSize = 0
+            }
+        }
+        /**
+          ------------------------消息发送缓存--------------------------------------- */
     }
 
     interface JavaWebSocketListener {

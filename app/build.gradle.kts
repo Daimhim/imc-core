@@ -38,7 +38,7 @@ dependencies {
     implementation(project(":imc-core"))
     implementation("com.github.Daimhim:SimpleAdapter:1.1.0")
     implementation("com.squareup.okhttp3:okhttp:4.9.3")
-    implementation("com.github.Daimhim.timber-multiple-platforms:timber-android:1.0.6.3")
+    implementation("com.github.Daimhim.timber-multiple-platforms:timber-android:1.0.8")
     implementation("androidx.core:core-ktx:1.7.0")
     implementation("androidx.appcompat:appcompat:1.4.1")
     implementation("com.google.android.material:material:1.5.0")
@@ -52,5 +52,5 @@ dependencies {
     implementation("org.java-websocket:Java-WebSocket:1.5.4")
     implementation("com.google.android.gms:play-services-cronet:18.0.1")
     implementation("org.chromium.net:cronet-api:108.5359.79")
-    testImplementation("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.6.3")
+    testImplementation("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.8")
 }
