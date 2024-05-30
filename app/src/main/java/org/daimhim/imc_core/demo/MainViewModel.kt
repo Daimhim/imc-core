@@ -19,7 +19,7 @@ class MainViewModel : ViewModel() {
     val onMessage : SharedFlow<MainItem> =_onMessage
 
 //    private val BASE_URL = ""
-    private val BASE_URL = "ws://124.222.224.186:8800"
+    private val BASE_URL = "https://13cabf4d.r3.cpolar.cn"
 //    private val BASE_URL = "http://e6ebacd.r15.cpolar.top"
 //    private val BASE_URL = ""
 
