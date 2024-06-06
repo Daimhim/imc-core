@@ -202,7 +202,7 @@ class RapidResponseForceV2(
                             }
                         }
                         val comparable = statePair.second.any as Comparable<Pair<String, Any?>>?
-                        comparable?.compareTo(statePair.second.childId to target)
+                        comparable?.compareTo(statePair.second.childId to target?.any)
                     }
                     RRF_DELETE_QUERY->{ // 查询并删除
                         var target : WrapOrderState? = null
@@ -235,7 +235,7 @@ class RapidResponseForceV2(
                             }
                         }
                         val comparable = statePair.second.any as Comparable<Pair<String, Any?>>?
-                        comparable?.compareTo(statePair.second.childId to target)
+                        comparable?.compareTo(statePair.second.childId to target?.any)
                     }
                 }
                 IMCLog.i("↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑当前正在进行的操作↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
