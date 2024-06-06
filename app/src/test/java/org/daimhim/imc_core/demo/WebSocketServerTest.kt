@@ -66,6 +66,7 @@ class WebSocketServerTest {
 
     private val draft = Draft_6455()
     fun decode(buffer: ByteBuffer) {
+        println("WebSocketServerTest.decode")
         val translateFrame = draft.translateFrame(buffer)
         val first = translateFrame.first()
         println("first:${first::class.java.name}")

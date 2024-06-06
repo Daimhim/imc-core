@@ -1,7 +1,5 @@
 package org.daimhim.imc_core
 
-import java.lang.ref.WeakReference
-import java.util.*
 import java.util.concurrent.*
 import kotlin.Comparator
 
@@ -36,9 +34,9 @@ class RapidResponseForceV2(
         private val RRF_MODIFY = 2
         private val RRF_DELETE_QUERY = 3
         //超时回调队列
-        private val timeoutCallbackMap = mutableMapOf<String,WeakReference<Comparable<Pair<String,Any?>>>>()
+        private val timeoutCallbackMap = mutableMapOf<String,Comparable<Pair<String,Any?>>>()
         // 取消回调队列
-        private val cancelCallbackMap = mutableMapOf<String,WeakReference<Comparable<Pair<String,Any?>>>>()
+        private val cancelCallbackMap = mutableMapOf<String,Comparable<Pair<String,Any?>>>()
         private val syncRRF = Any()
 
         /**
@@ -57,17 +55,27 @@ class RapidResponseForceV2(
             isRun = true
             Thread(powerTrainRunnable).start()
         }
+
+        private fun toAction(action: Int): String {
+            return when (action) {
+                RRF_INCREASE -> "插入"
+                RRF_DELETE -> "删除等待列表"
+                RRF_MODIFY -> "修改"
+                RRF_DELETE_QUERY -> "查询并删除操作队列和等待列表"
+                else -> "未知"
+            }
+        }
     }
     fun register(id: String, t: Any? = null, timeOut: Long = MAX_TIMEOUT_TIME){
         synchronized(syncRRF){
-            IMCLog.i("register id:${id}")
+            IMCLog.i("注册:groupId:${groupId} id:${id}")
             operationTasksQueue.add(RRF_INCREASE to WrapOrderState(groupId = groupId,id,t,timeOut))
             startProcessor()
         }
     }
     fun unRegister(id: String) {
         synchronized(syncRRF) {
-            IMCLog.i("unRegister id:${id}")
+            IMCLog.i("注销:groupId:${groupId} id:${id}")
             operationTasksQueue.add(RRF_DELETE to WrapOrderState(groupId = groupId, childId = id))
             startProcessor()
         }
@@ -103,17 +111,7 @@ class RapidResponseForceV2(
                 timeoutCallbackMap.remove(groupId)
                 return@synchronized
             }
-            val wrCall = WeakReference(call)
-            timeoutCallbackMap.put(groupId, WeakReference(object : Comparable<Pair<String,Any?>>{
-                override fun compareTo(other: Pair<String, Any?>): Int {
-                    // get() 非必须
-                    return executors.submit(object : Callable<Int>{
-                        override fun call(): Int {
-                            return wrCall.get()?.compareTo(other)?:0
-                        }
-                    }).get()
-                }
-            }))
+            timeoutCallbackMap.put(groupId, call)
         }
     }
 
@@ -127,17 +125,7 @@ class RapidResponseForceV2(
                 timeoutCallbackMap.remove(groupId)
                 return@synchronized
             }
-            val wrCall = WeakReference(call)
-            cancelCallbackMap.put(groupId, WeakReference(object : Comparable<Pair<String,Any?>>{
-                override fun compareTo(other: Pair<String, Any?>): Int {
-                    // get() 非必须
-                    return executors.submit(object : Callable<Int>{
-                        override fun call(): Int {
-                            return wrCall.get()?.compareTo(other)?:0
-                        }
-                    }).get()
-                }
-            }))
+            cancelCallbackMap.put(groupId, call)
         }
     }
 
@@ -178,20 +166,19 @@ class RapidResponseForceV2(
             // 单项剩余时间
             var remainingTime = 0L
             while (true){
+                IMCLog.i("↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓当前待操作项目↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓")
                 operationTasksQueue.forEach {
-                    IMCLog.i("当前项目：${it.first}")
+                    IMCLog.i("${toAction(it.first)} ${it.second.childId}")
                 }
-                // 没有操作 没有任务 使用全局休眠时间
-//                if (operationTasksQueue.isEmpty() && taskToBeExecuted.isEmpty()){
-//                    localWaitingTime = MAXIMUM_IDLE_TIME
-//                }
-                IMCLog.i("当前操作队列：${operationTasksQueue.size} 当前待执行任务：${taskToBeExecuted.size} 当前休眠时间:${localWaitingTime}")
+                IMCLog.i("↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑当前待操作项目 ${localWaitingTime} ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
                 // 取操作
                 statePair = operationTasksQueue.poll(localWaitingTime,TimeUnit.MILLISECONDS)
-                IMCLog.i("取操作执行结果 first:${if (statePair?.first == RRF_INCREASE) "add" else "del"} childId:${statePair?.second?.childId} statePair&&taskToBeExecuted taskToBeExecuted.size：${taskToBeExecuted.size} ${statePair == null && taskToBeExecuted.isEmpty()}")
                 if (statePair == null && taskToBeExecuted.isEmpty()){
                     break
                 }
+
+                IMCLog.i("↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓当前正在进行的操作↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓")
+                IMCLog.i("${toAction(statePair?.first?:-1)} ${statePair?.second?.childId}")
                 when(statePair?.first){
                     RRF_INCREASE->{ // 增加
                         taskToBeExecuted.add(statePair.second)
@@ -208,13 +195,8 @@ class RapidResponseForceV2(
                         for (cancelWOS in filterIndexed) {
                             target = cancelWOS
                             try {
-                                val get = cancelCallbackMap[cancelWOS.groupId]?.get()
-                                if (get == null){
-                                    cancelCallbackMap.remove(cancelWOS.groupId)
-                                    continue
-                                }
-                                IMCLog.i("deleteWOS ${cancelWOS.childId}")
-                                get.compareTo(cancelWOS.childId to cancelWOS.any)
+                                cancelCallbackMap[cancelWOS.groupId]
+                                    ?.compareTo(cancelWOS.childId to cancelWOS.any)
                             } catch (e: Exception) {
                                 e.printStackTrace()
                             }
@@ -246,13 +228,8 @@ class RapidResponseForceV2(
                         for (cancelWOS in filterIndexed) {
                             target = cancelWOS
                             try {
-                                val get = cancelCallbackMap[cancelWOS.groupId]?.get()
-                                if (get == null){
-                                    cancelCallbackMap.remove(cancelWOS.groupId)
-                                    continue
-                                }
-                                IMCLog.i("deleteWOS ${cancelWOS.childId}")
-                                get.compareTo(cancelWOS.childId to cancelWOS.any)
+                                cancelCallbackMap[cancelWOS.groupId]
+                                    ?.compareTo(cancelWOS.childId to cancelWOS.any)
                             } catch (e: Exception) {
                                 e.printStackTrace()
                             }
@@ -261,6 +238,7 @@ class RapidResponseForceV2(
                         comparable?.compareTo(statePair.second.childId to target)
                     }
                 }
+                IMCLog.i("↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑当前正在进行的操作↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
                 // 操作未完成
                 if (operationTasksQueue.isNotEmpty()){
                     continue
@@ -278,7 +256,6 @@ class RapidResponseForceV2(
                 localWaitingTime = MAXIMUM_IDLE_TIME
                 // 过滤待删除
                 val deleteWOSs = taskToBeExecuted.filter { orderState ->
-                    IMCLog.i("当前任务队列：${orderState}")
                     orderState.accumulatedTime += lastInterval
                     remainingTime = orderState.timeOut - orderState.accumulatedTime
                     if (remainingTime <= 0) { // 已经超时
@@ -289,21 +266,19 @@ class RapidResponseForceV2(
                     }
                     return@filter false
                 }
-                IMCLog.i("删除超时任务${Arrays.toString(deleteWOSs.toTypedArray())} 当前休眠时间：${localWaitingTime}")
+                IMCLog.i("↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓当前等待队列时间到要删除的↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓")
                 for (deleteWOS in deleteWOSs) {
                     try {
-                        val get = timeoutCallbackMap[deleteWOS.groupId]?.get()
-                        if (get == null){
-                            timeoutCallbackMap.remove(deleteWOS.groupId)
-                            continue
-                        }
-                        IMCLog.i("deleteWOS ${deleteWOS.childId}")
-
-                        get.compareTo(deleteWOS.childId to deleteWOS.any)
+                        timeoutCallbackMap[deleteWOS.groupId]
+                            .also {
+                                IMCLog.i("groupId:${deleteWOS.groupId} childId:${deleteWOS.childId} get:${it == null}")
+                            }
+                            ?.compareTo(deleteWOS.childId to deleteWOS.any)
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
                 }
+                IMCLog.i("↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑当前等待队列时间到要删除的↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
                 //从来源删除
                 taskToBeExecuted.removeAll(deleteWOSs)
                 // 记录本次时间

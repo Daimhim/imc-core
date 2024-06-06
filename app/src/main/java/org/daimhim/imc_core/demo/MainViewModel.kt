@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.daimhim.imc_core.*
 import timber.multiplatform.log.Timber
+import java.util.concurrent.TimeUnit
 
 class MainViewModel : ViewModel() {
 
@@ -19,7 +20,7 @@ class MainViewModel : ViewModel() {
     val onMessage : SharedFlow<MainItem> =_onMessage
 
 //    private val BASE_URL = ""
-    private val BASE_URL = "https://13cabf4d.r3.cpolar.cn"
+    val BASE_URL = ""
 //    private val BASE_URL = "http://e6ebacd.r15.cpolar.top"
 //    private val BASE_URL = ""
 
@@ -38,6 +39,9 @@ class MainViewModel : ViewModel() {
     private var iEngine  = JavaWebEngine
         .Builder()
         .setIMCLog(TimberIMCLog("11111111111111111111"))
+        .rescueEnable(true)
+        .heartbeatEnable(true)
+        .heartbeatInterval(5L,45L,TimeUnit.SECONDS)
         .build()
     init {
         iEngine.setIMCStatusListener(object : IMCStatusListener {

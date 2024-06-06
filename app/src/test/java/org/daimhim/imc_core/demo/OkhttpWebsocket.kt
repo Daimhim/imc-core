@@ -14,7 +14,8 @@ class OkhttpWebsocket  {
             .build()
             .newWebSocket(
                 Request.Builder().url(
-                    "wss://278b479b.r24.cpolar.top/ws?platform=android&token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOiIxMTk5MjQ0MzIxMjU0MTUwMTQ0Iiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiMTUwMTUxMTIwMDgiLCJsb2dpbiI6MTcxNTU4NTQ1Nn0.MSSfcILGEqxX9sICaCKvd7d7_4BkX23BkHlbDG6X2BUNoESDjPCF2qtkfhHEWJZ3FkYdFSABnrKTnXyoxPY9mLA09rf8R5JJMga3zaPR6J_jGzuu3acM_zQKp7qFBRgoC9_ceHRt7pywb16LjASeGBIMCif2mG0OqlPP-NAW2Xs&name=202012221018295"
+//                    "wss://278b479b.r24.cpolar.top/ws?platform=android&token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOiIxMTk5MjQ0MzIxMjU0MTUwMTQ0Iiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiMTUwMTUxMTIwMDgiLCJsb2dpbiI6MTcxNTU4NTQ1Nn0.MSSfcILGEqxX9sICaCKvd7d7_4BkX23BkHlbDG6X2BUNoESDjPCF2qtkfhHEWJZ3FkYdFSABnrKTnXyoxPY9mLA09rf8R5JJMga3zaPR6J_jGzuu3acM_zQKp7qFBRgoC9_ceHRt7pywb16LjASeGBIMCif2mG0OqlPP-NAW2Xs&name=202012221018295"
+                    "ws://127.0.0.1:4728/ws?platform=android&token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOiIxMTk5MjQ0MzIxMjU0MTUwMTQ0Iiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiMTUwMTUxMTIwMDgiLCJsb2dpbiI6MTcxNTU4NTQ1Nn0.MSSfcILGEqxX9sICaCKvd7d7_4BkX23BkHlbDG6X2BUNoESDjPCF2qtkfhHEWJZ3FkYdFSABnrKTnXyoxPY9mLA09rf8R5JJMga3zaPR6J_jGzuu3acM_zQKp7qFBRgoC9_ceHRt7pywb16LjASeGBIMCif2mG0OqlPP-NAW2Xs&name=202012221018295"
                 ).build(), webSocketListenerImpl
             )
         while (true){

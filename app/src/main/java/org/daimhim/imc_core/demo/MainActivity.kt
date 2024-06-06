@@ -118,6 +118,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun initView() {
         _binding.rvList.adapter = _mainAdapter
+        _binding.textviewFirst.setText(_viewModel.BASE_URL)
     }
 
     override fun onDestroy() {

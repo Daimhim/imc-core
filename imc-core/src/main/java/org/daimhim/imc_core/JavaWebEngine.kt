@@ -103,6 +103,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
                     URI(finalUrl),
                     timeout = connectTimeout,
                     rescueEnable = builder.rescueEnable(),
+                    heartbeatEnable = builder.heartbeatEnable(),
                     nst = builder.nst(),
                     customHeartbeat = builder.customHeartbeat(),
                 )
@@ -138,7 +139,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
 
     override fun engineOff() {
         cleanPreviousConnection()
-        webSocketClient?.closeBlocking()
+        webSocketClient?.close()
         webSocketClient?.javaWebSocketListener = null
         webSocketClient = null
         synchronized(syncJWE) {
@@ -235,6 +236,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         httpHeaders: Map<String, String> = mutableMapOf(),
         timeout: Int = 0,
         private val rescueEnable: Boolean,
+        private val heartbeatEnable: Boolean,
         private val nst: NST? = null,
         private val customHeartbeat: CustomHeartbeat? = null,
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
@@ -331,7 +333,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         private var lastPong = System.nanoTime()
 
         // 心跳间隔
-        val HEARTBEAT_INTERVAL = "HEARTBEAT_INTERVAL"
+        val HEARTBEAT_INTERVAL = "心跳间隔_${hashCode()}"
 
         override fun onWebsocketPong(conn: WebSocket?, f: Framedata?) {
             retryingSendingCache()
@@ -355,6 +357,10 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
 //            Timber.i("setConnectionLostTimeout ${connectionLostTimeout}")
             synchronized(syncConnectionLost) {
                 this.connectionLostTimeout = TimeUnit.MILLISECONDS.toNanos(connectionLostTimeout.toLong())
+                // 是否启动了自动心跳
+                if (!heartbeatEnable){
+                    return
+                }
                 if (this.connectionLostTimeout <= 0) {
                     cancelConnectionLostTimer()
                     return
@@ -369,6 +375,10 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         override fun startConnectionLostTimer() {
             Timber.i("startConnectionLostTimer")
             synchronized(syncConnectionLost) {
+                // 是否启动了自动心跳
+                if (!heartbeatEnable){
+                    return
+                }
                 if (connectionLostTimeout < 0) {
                     return
                 }
@@ -380,6 +390,10 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         public override fun stopConnectionLostTimer() {
 //            Timber.i("stopConnectionLostTimer")
             synchronized(syncConnectionLost) {
+                // 是否启动了自动心跳
+                if (!heartbeatEnable){
+                    return
+                }
                 websocketRunning = false
                 cancelConnectionLostTimer()
             }
@@ -391,6 +405,10 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         private fun restartConnectionLostTimer() {
+            // 是否启动了自动心跳
+            if (!heartbeatEnable){
+                return
+            }
             val timeOut = TimeUnit.NANOSECONDS.toMillis(connectionLostTimeout)
             Timber.i("restartConnectionLostTimer ${timeOut}")
             cancelConnectionLostTimer()
@@ -469,7 +487,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
          */
 
         //定时器
-        private val AUTO_RECONNECT = "AUTO_RECONNECT"
+        private val AUTO_RECONNECT = "自动连接_${hashCode()}"
 
         /**
          * 正在抢救中
@@ -519,6 +537,10 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         fun startAutoConnect() {
             Timber.i("开始抢救 isConnecting_Automatically:${isConnecting_Automatically} ${isAutomaticallyConnecting} isOpen:${isOpen}")
             synchronized(syncConnectionLost) {
+                // 是否启动了 自动抢救
+                if (!rescueEnable) {
+                    return
+                }
                 if (isOpen) {
                     // 不需要抢救
                     return
@@ -567,6 +589,10 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         fun stopAutoConnect() {
             Timber.i("停止抢救")
             synchronized(syncConnectionLost) {
+                // 是否启动了 自动抢救
+                if (!rescueEnable) {
+                    return
+                }
                 isAutomaticallyConnecting = false
                 isConnecting_Automatically = false
                 isWaitingNextAutomaticConnection = false
@@ -712,6 +738,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         internal var maxReconnectDelay = 128 * 1000
         internal var debug = false
         internal var rescueEnable = true
+        internal var heartbeatEnable = true
         internal var nst: NST? = null
         internal var imcLogFactory: IIMCLogFactory? = null
         internal var customHeartbeat: CustomHeartbeat? = null
@@ -753,6 +780,9 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
 
         fun rescueEnable(rescueEnable: Boolean) = apply { this.rescueEnable = rescueEnable }
         fun rescueEnable() = rescueEnable
+
+        fun heartbeatEnable(heartbeatEnable: Boolean) = apply { this.heartbeatEnable = heartbeatEnable }
+        fun heartbeatEnable() = heartbeatEnable
 
         fun customHeartbeat(): CustomHeartbeat? = customHeartbeat
 
