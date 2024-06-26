@@ -5,7 +5,9 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.URI
 
-class UDPEngine : IEngine {
+class UDPEngine(
+    build:Builder
+) : IEngine {
     private var serverAddress : URI = URI.create("http://127.0.0.1:0")
     private var isConnect = false
     private var datagramSocket:DatagramSocket? = null
@@ -13,17 +15,14 @@ class UDPEngine : IEngine {
 
     private val receiveRunnable = object : Runnable{
         override fun run() {
-            val data = ByteArray(1024)
-            var udpBuffer : DatagramPacket
-            while (isConnect && thread?.isInterrupted == true){
-                udpBuffer = DatagramPacket(data,data.size)
-                datagramSocket?.receive(udpBuffer)
-                imcListenerManager.onMessage(this@UDPEngine,String(udpBuffer.data.copyOfRange(0,udpBuffer.length)))
+            while (isConnect && thread?.isInterrupted == false){
+                build.receiveParser.parser(this@UDPEngine,imcListenerManager,datagramSocket)
             }
         }
 
     }
     private var thread : Thread? = null
+    private var stayOnline  :StayOnline? = null
 
     override fun engineOn(key: String) {
         synchronized(syncUDP){
@@ -34,8 +33,9 @@ class UDPEngine : IEngine {
             datagramSocket = DatagramSocket(0)
             datagramSocket?.reuseAddress = true
             datagramSocket?.connect(InetAddress.getByName(serverAddress.host),serverAddress.port)
-            println("UDPEngine.engineOn")
+            println("UDPEngine.engineOn 连接成功")
             isConnect = true
+            imcStatusListener?.connectionSucceeded()
             thread = Thread(receiveRunnable)
             thread?.start()
         }
@@ -48,6 +48,7 @@ class UDPEngine : IEngine {
     override fun engineOff() {
         thread?.interrupt()
         datagramSocket?.close()
+        imcStatusListener?.connectionClosed(-1,"主动关闭")
         thread = null
         datagramSocket = null
     }
@@ -89,9 +90,85 @@ class UDPEngine : IEngine {
     override fun makeConnection() {
 
     }
+
+    class StayOnline(
+        private val iEngine: IEngine,
+        private val customContent:CustomHeartbeat,
+        var imcStatusListener: IMCStatusListener?
+    ) {
+        // 心跳间隔
+        val HEARTBEAT_INTERVAL = "心跳间隔_${hashCode()}"
+        val rapidResponseForce = RapidResponseForceV2()
+        // 最后一次心跳响应
+        private var lastPong = System.currentTimeMillis()
+        var maximumInterval : Long = 5 * 1000
+        private val asyn = Any()
+        var inProgress = false
+        init {
+            rapidResponseForce.timeoutCallback(object : Comparable<Pair<String, Any?>>{
+                override fun compareTo(other: Pair<String, Any?>): Int {
+                    if (other.first == HEARTBEAT_INTERVAL){
+                        // 检查上次
+                        examine()
+                        // 继续本次
+                        execution()
+                    }
+                    return 0
+                }
+
+            })
+            iEngine.addIMCListener(object : V2IMCListener{
+                override fun onMessage(byteArray: ByteArray) {
+                    update()
+                }
+
+                override fun onMessage(text: String) {
+                    update()
+                }
+            })
+        }
+        fun start() {
+            if (inProgress){
+                return
+            }
+            execution()
+        }
+
+        fun stop() {
+            synchronized(asyn) {
+                inProgress = false
+                rapidResponseForce.unRegister(HEARTBEAT_INTERVAL)
+            }
+        }
+        fun examine(){
+            // 响应时间超出，抛出异常
+            if (System.currentTimeMillis() - lastPong > maximumInterval){
+                imcStatusListener?.connectionLost(IllegalStateException("心跳超时"))
+            }
+        }
+        fun execution(){
+            synchronized(asyn){
+                if (customContent.byteOrString())
+                    iEngine.send(customContent.stringHeartbeat())
+                else
+                    iEngine.send(customContent.byteHeartbeat())
+                rapidResponseForce.register(HEARTBEAT_INTERVAL,"",maximumInterval)
+                inProgress = true
+            }
+        }
+        fun update() {
+            synchronized(asyn) {
+                lastPong = System.currentTimeMillis()
+            }
+        }
+    }
     //--------------------------------监听相关-----------------------------------------------
     internal val imcListenerManager = IMCListenerManager()
     var imcStatusListener: IMCStatusListener? = null
+        set(value) {
+            stayOnline?.imcStatusListener = value
+            field = value
+        }
     override fun addIMCListener(imcListener: V2IMCListener) {
         imcListenerManager.addIMCListener(imcListener)
     }
@@ -110,5 +187,27 @@ class UDPEngine : IEngine {
 
     override fun setIMCStatusListener(listener: IMCStatusListener?) {
         imcStatusListener = listener
+    }
+
+    public class Builder{
+        internal var receiveParser:UDPReceiveParser = DefUDPReceiveParser()
+        fun setReceiveParser(receiveParser:UDPReceiveParser):Builder{
+            this.receiveParser = receiveParser
+            return this
+        }
+        fun builder():UDPEngine{
+            return UDPEngine(this)
+        }
+    }
+
+    class DefUDPReceiveParser : UDPReceiveParser{
+        private val data = ByteArray(1024)
+        private lateinit var udpBuffer : DatagramPacket
+        override fun parser(iEngine: IEngine, imcListenerManager: IMCListenerManager, datagramSocket: DatagramSocket?) {
+            udpBuffer = DatagramPacket(data,data.size)
+            datagramSocket?.receive(udpBuffer)
+            imcListenerManager.onMessage(iEngine,String(udpBuffer.data.copyOfRange(0,udpBuffer.length)))
+        }
+
     }
 }
