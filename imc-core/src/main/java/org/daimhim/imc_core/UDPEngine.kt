@@ -16,7 +16,15 @@ class UDPEngine(
     private val receiveRunnable = object : Runnable{
         override fun run() {
             while (isConnect && thread?.isInterrupted == false){
-                build.receiveParser.parser(this@UDPEngine,imcListenerManager,datagramSocket)
+                try {
+                    build.receiveParser.parser(this@UDPEngine,imcListenerManager,datagramSocket)
+                }catch (e:Exception){
+                    e.printStackTrace()
+                    IMCLog.e(e)
+                }
+                if (!isConnect() && isConnect){
+                    makeConnection()
+                }
             }
         }
 
@@ -32,7 +40,7 @@ class UDPEngine(
             serverAddress = URI(key)
             datagramSocket = DatagramSocket(0)
             datagramSocket?.reuseAddress = true
-            datagramSocket?.connect(InetAddress.getByName(serverAddress.host),serverAddress.port)
+            makeConnection()
             println("UDPEngine.engineOn 连接成功")
             isConnect = true
             imcStatusListener?.connectionSucceeded()
@@ -51,6 +59,7 @@ class UDPEngine(
         imcStatusListener?.connectionClosed(-1,"主动关闭")
         thread = null
         datagramSocket = null
+        isConnect = false
     }
 
     override fun engineState(): Int {
@@ -88,7 +97,10 @@ class UDPEngine(
     }
 
     override fun makeConnection() {
-
+        if (isConnect()){
+            return
+        }
+        datagramSocket?.connect(InetAddress.getByName(serverAddress.host),serverAddress.port)
     }
 
     class StayOnline(
@@ -191,8 +203,14 @@ class UDPEngine(
 
     public class Builder{
         internal var receiveParser:UDPReceiveParser = DefUDPReceiveParser()
+        internal var customContent:CustomHeartbeat = DefCustomHeartbeat()
+
         fun setReceiveParser(receiveParser:UDPReceiveParser):Builder{
             this.receiveParser = receiveParser
+            return this
+        }
+        fun setCustomContent(customContent:CustomHeartbeat):Builder{
+            this.customContent = customContent
             return this
         }
         fun builder():UDPEngine{
@@ -207,6 +225,27 @@ class UDPEngine(
             udpBuffer = DatagramPacket(data,data.size)
             datagramSocket?.receive(udpBuffer)
             imcListenerManager.onMessage(iEngine,String(udpBuffer.data.copyOfRange(0,udpBuffer.length)))
+        }
+    }
+    class DefCustomHeartbeat : CustomHeartbeat{
+        override fun isHeartbeat(iEngine: IEngine, bytes: ByteArray): Boolean {
+            TODO("Not yet implemented")
+        }
+
+        override fun isHeartbeat(iEngine: IEngine, text: String): Boolean {
+            TODO("Not yet implemented")
+        }
+
+        override fun byteHeartbeat(): ByteArray {
+            TODO("Not yet implemented")
+        }
+
+        override fun stringHeartbeat(): String {
+            TODO("Not yet implemented")
+        }
+
+        override fun byteOrString(): Boolean {
+            TODO("Not yet implemented")
         }
 
     }

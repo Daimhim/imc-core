@@ -20,7 +20,7 @@ class MainViewModel : ViewModel() {
     val onMessage : SharedFlow<MainItem> =_onMessage
 
 //    private val BASE_URL = ""
-    val BASE_URL = ""
+    val BASE_URL = "https://537b-117-22-144-111.ngrok-free.app"
 //    private val BASE_URL = "http://e6ebacd.r15.cpolar.top"
 //    private val BASE_URL = ""
 
@@ -36,12 +36,12 @@ class MainViewModel : ViewModel() {
 //        .customHeartbeat(QGBHeartbeat())
 //        .build()
 
-    private var iEngine  = JavaWebEngine
+    private var iEngine  = V2JavaWebEngine
         .Builder()
         .setIMCLog(TimberIMCLog("11111111111111111111"))
         .rescueEnable(true)
-        .heartbeatEnable(true)
-        .heartbeatInterval(5L,45L,TimeUnit.SECONDS)
+//        .heartbeatEnable(true)
+//        .heartbeatInterval(5L,45L,TimeUnit.SECONDS)
         .build()
     init {
         iEngine.setIMCStatusListener(object : IMCStatusListener {
