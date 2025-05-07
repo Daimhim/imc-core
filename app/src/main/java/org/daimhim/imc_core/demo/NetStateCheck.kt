@@ -1,7 +1,6 @@
 package org.daimhim.imc_core.demo
 
 import com.custom.socket_connect.INetConnST
-import com.custom.socket_connect.NetCheckState
 import org.daimhim.imc_core.NetCheckConfig
 import java.io.BufferedReader
 import java.io.InputStreamReader

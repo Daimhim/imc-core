@@ -20,9 +20,19 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
         <ToggleButton
-            android:textOff="当前固定心跳，切换到固定心跳"
-            android:textOn="当前动态心跳，切换到动态心跳"
+            android:textOff="当前固定心跳，切换到动态心跳"
+            android:textOn="当前动态心跳，切换到固定心跳"
             android:id="@+id/tb_heartbeat"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"/>
+    </LinearLayout>
+    <LinearLayout
+        android:orientation="horizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+        <Button
+            android:text="重置连接"
+            android:id="@+id/bt_rest"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
     </LinearLayout>

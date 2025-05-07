@@ -1,24 +1,16 @@
 package org.daimhim.imc_core
 
-import okhttp3.internal.checkDuration
 import okio.ByteString.Companion.toByteString
 import org.java_websocket.WebSocket
 import org.java_websocket.client.WebSocketClient
-import org.java_websocket.drafts.Draft
 import org.java_websocket.drafts.Draft_6455
-import org.java_websocket.enums.Opcode
 import org.java_websocket.enums.ReadyState
 import org.java_websocket.enums.Role
-import org.java_websocket.framing.CloseFrame
 import org.java_websocket.framing.Framedata
-import org.java_websocket.framing.PingFrame
 import org.java_websocket.handshake.ServerHandshake
 import timber.multiplatform.log.Timber
 import java.net.URI
 import java.nio.ByteBuffer
-import java.util.*
-import java.util.concurrent.TimeUnit
-import kotlin.collections.ArrayList
 
 class V2JavaWebEngine private constructor(private val builder: Builder) : IEngine {
     companion object {
@@ -109,7 +101,6 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
                 webSocketClient = WebSocketClientImpl(
                     URI(finalUrl),
                     timeout = connectTimeout,
-                    rescueEnable = builder.rescueEnable(),
                     nst = builder.nst(),
                 )
             }
@@ -123,12 +114,14 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
                 resetKey(key)
                 return
             }
+            // 初始化 监听
+            webSocketClient?.javaWebSocketListener = javaWebsocketListener
+            //初始化 自动连接
+            webSocketClient?.setAutoConnect(builder.autoConnect)
             // 初始化状态
             heartbeatMode[this.defHeartbeatMode]?.let {
                 webSocketClient?.onChangeMode(it)
             }
-            webSocketClient?.javaWebSocketListener = javaWebsocketListener
-            webSocketClient?.maxReconnectDelay = builder.maxReconnectDelay.toLong()
             webSocketClient?.connect()
             isConnecting = true
             isResetting = false
@@ -240,7 +233,6 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         serverUri: URI,
         httpHeaders: Map<String, String> = mutableMapOf(),
         timeout: Int = 0,
-        private val rescueEnable: Boolean,
         private val nst: NST? = null,
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
 
@@ -249,28 +241,11 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         private var isClosed = false
         private var iLinkNative: ILinkNative? = null
 
-
-
-        private val timedTasks = object : Comparable<Pair<String, Any?>> {
-            override fun compareTo(other: Pair<String, Any?>): Int {
-                Timber.i("timeoutCallback ${other.first}")
-                if (other.first == AUTO_RECONNECT) {
-                    // 自动连接
-                    autoReconnect(other)
-                }
-                return 0;
-            }
-
-        }
-
         /**
          * 心跳器
          */
         private var linkNative : ILinkNative? = null
 
-        init {
-            rapidResponseForce.timeoutCallback(this.timedTasks)
-        }
         fun onChangeMode(iLinkNative: ILinkNative){
             this.linkNative?.stopConnectionLostTimer()
             this.linkNative = iLinkNative
@@ -374,140 +349,37 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         ------------------------自动连接---------------------------------------
          */
 
-        //定时器
-        private val AUTO_RECONNECT = "自动连接_${hashCode()}"
+        private var autoConnect : IAutoConnect? = null
 
-        /**
-         * 正在抢救中
-         */
-        private var isAutomaticallyConnecting = false
-
-        /**
-         * 连接中状态 连接结果，open/close
-         */
-        private var isConnecting_Automatically = false
-
-        /**
-         * 进入等待下一次连接
-         */
-        private var isWaitingNextAutomaticConnection = false
-
-        // 初始值
-        private val initReconnectDelay = 1000L
-        internal var reconnectDelay = initReconnectDelay  // Reconnect delay, starts at 1
-        var maxReconnectDelay = 128_1000L
+        fun setAutoConnect(auto:IAutoConnect?){
+            autoConnect = auto
+            autoConnect?.initAutoConnect(this)
+        }
 
         /**
          * 异常断开 并启动自动重连
+         * onClose
+         * onError
          */
         private fun abnormalDisconnectionAndAutomaticReconnection() {
-            // 是否启动了 自动抢救
-            if (!rescueEnable) {
-                return
-            }
-            // 连接结果初始化
-            synchronized(syncConnectionLost) {
-                isConnecting_Automatically = false
-            }
-            // 初次还是多次
-            if (isAutomaticallyConnecting) {
-                // 连接已经过了
-                waitingNextAutomaticConnection(reconnectDelay)
-                return
-            }
-            // 初次
-            startAutoConnect()
-        }
-
-        /**
-         * 对外 启动自动连接
-         */
-        fun startAutoConnect() {
-            Timber.i("开始抢救 isConnecting_Automatically:${isConnecting_Automatically} ${isAutomaticallyConnecting} isOpen:${isOpen}")
-            synchronized(syncConnectionLost) {
-                // 是否启动了 自动抢救
-                if (!rescueEnable) {
-                    return
-                }
-                if (isOpen) {
-                    // 不需要抢救
-                    return
-                }
-                if (isAutomaticallyConnecting) {
-                    //多次启动 直接返回
-                    return
-                }
-                if (isConnecting_Automatically) {
-                    // 正在连接 直接返回
-                    return
-                }
-                // 初次 记录一下初次
-                isAutomaticallyConnecting = true
-                waitingNextAutomaticConnection(reconnectDelay)
-            }
-        }
-
-        /**
-         * 等待下一次 自动连接
-         */
-        private fun waitingNextAutomaticConnection(delay: Long) {
-            Timber.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection} reconnectDelay:$reconnectDelay")
-            synchronized(syncConnectionLost) {
-                if (isWaitingNextAutomaticConnection) {
-                    return
-                }
-                if (reconnectDelay < maxReconnectDelay) {
-                    reconnectDelay = delay * 2
-                }
-                isWaitingNextAutomaticConnection = true
-                rapidResponseForce.register(AUTO_RECONNECT, null, reconnectDelay)
-                Timber.i("等待下一次 111 ${reconnectDelay}")
-            }
+            autoConnect?.abnormalDisconnectionAndAutomaticReconnection()
         }
 
         /**
          * 重置自动连接，用于更新配置
          */
         internal fun resetStartAutoConnect() {
-            Timber.i("重置抢救，之前记录${reconnectDelay}")
+            Timber.i("重置抢救，之前记录")
             iLinkNative?.stopConnectionLostTimer()
-            stopAutoConnect()
-            startAutoConnect()
+            autoConnect?.resetStartAutoConnect()
         }
 
-        fun stopAutoConnect() {
-            Timber.i("停止抢救")
-            synchronized(syncConnectionLost) {
-                // 是否启动了 自动抢救
-                if (!rescueEnable) {
-                    return
-                }
-                isAutomaticallyConnecting = false
-                isConnecting_Automatically = false
-                isWaitingNextAutomaticConnection = false
-                reconnectDelay = initReconnectDelay
-                rapidResponseForce.unRegister(AUTO_RECONNECT)
-            }
+        fun stopAutoConnect(){
+            autoConnect?.stopAutoConnect()
         }
 
-        private fun startConnect(any: Any?) {
-            Timber.i("startConnect 111 ${isConnecting_Automatically}")
-            synchronized(syncConnectionLost) {
-                if (isConnecting_Automatically) {
-                    return
-                }
-                isConnecting_Automatically = true
-            }
-//            reconnectBlocking()
-            reconnect()
-            Timber.i("startConnect 222")
-        }
-
-        private fun autoReconnect(other: Pair<String, Any?>){
-            synchronized(syncConnectionLost) {
-                isWaitingNextAutomaticConnection = false
-            }
-            startConnect(other.second)
+        fun startAutoConnect(){
+            autoConnect?.startAutoConnect()
         }
         /**
          * ------------------------自动连接--------------------------------------- */
@@ -622,13 +494,12 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
 
     class Builder {
         internal var javaWebEngine: V2JavaWebEngine? = null
-        internal var maxReconnectDelay = 128 * 1000
         internal var debug = false
-        internal var rescueEnable = true //是否自救
         internal var nst: NST? = null
         internal var imcLogFactory: IIMCLogFactory? = null
         internal var heartbeatMode = mutableMapOf<Int,ILinkNative>() //心跳模式
-        internal var defHeartbeatMode = 0;
+        internal var defHeartbeatMode = 0
+        internal var autoConnect : IAutoConnect? = null
 
         /**
          *
@@ -647,9 +518,6 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
             this.imcLogFactory = imcLogFactory
         }
 
-        fun maxReconnectDelay(delay: Long, unit: TimeUnit) = apply {
-            maxReconnectDelay = checkDuration("maxReconnectDelay", delay, unit)
-        }
 
         fun debug(debug: Boolean) = apply {
             this.debug = debug
@@ -662,13 +530,14 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
 
         fun defHeartbeatMode(defHeartbeatMode: Int) = apply { this.defHeartbeatMode = defHeartbeatMode }
 
-        fun rescueEnable(rescueEnable: Boolean) = apply { this.rescueEnable = rescueEnable }
-        fun rescueEnable() = rescueEnable
-
         fun addHeartbeatMode(key:Int,value:ILinkNative):Builder{
             heartbeatMode[key] = value
             return this
         }
+        fun setAutoConnect(auto:IAutoConnect) = apply {
+            autoConnect = auto
+        }
+
         fun removeHeartbeatMode(key:Int):Builder{
             heartbeatMode.remove(key)
             return this

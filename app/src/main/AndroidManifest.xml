@@ -24,12 +24,13 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <receiver android:name=".AlarmTimeoutScheduler$AlarmTimeoutBroadcastReceiver"
+        <receiver
+            android:name=".AlarmTimeoutScheduler$AlarmTimeoutBroadcastReceiver"
             android:enabled="true"
             android:exported="true"
             android:permission="com.android.alarm.permission.SET_ALARM">
             <intent-filter>
-                <action android:name="org.daimhim.imc.action.ALARM_TIMEOUT_ACTION"/>
+                <action android:name="org.daimhim.imc.action.ALARM_TIMEOUT_ACTION" />
             </intent-filter>
         </receiver>
     </application>

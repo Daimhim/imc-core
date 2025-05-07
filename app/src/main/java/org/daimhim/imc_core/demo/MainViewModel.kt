@@ -39,7 +39,6 @@ class MainViewModel : ViewModel() {
     private var iEngine  = V2JavaWebEngine
         .Builder()
         .setIMCLog(TimberIMCLog("11111111111111111111"))
-        .rescueEnable(true)
 //        .heartbeatEnable(true)
 //        .heartbeatInterval(5L,45L,TimeUnit.SECONDS)
         .build()

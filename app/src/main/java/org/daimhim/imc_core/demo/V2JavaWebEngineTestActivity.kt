@@ -25,15 +25,12 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
         initEngine()
         initView()
         initListener()
-
-
     }
 
     private fun initEngine() {
 
         engine = V2JavaWebEngine
             .Builder()
-            .rescueEnable(true)
             .setIMCLog(TimberIMCLog("V2JavaWebEngine"))
             .addHeartbeatMode(
                 FIXED_HEARTBEAT,
@@ -49,6 +46,12 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
                     .setHeartbeatStep(10)
                     .setMinHeartbeat(35L)
                     .setInitialHeartbeat(45L)
+                    .setTimeoutScheduler(AlarmTimeoutScheduler())
+                    .build()
+            )
+            .setAutoConnect(
+                ProgressiveAutoConnect
+                    .Builder()
                     .setTimeoutScheduler(AlarmTimeoutScheduler())
                     .build()
             )
@@ -85,6 +88,11 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
                 mainAdapter.addItem(MainItem("Ta",1,text))
             }
         })
+        // 重置连接
+        findViewById<View>(R.id.bt_rest)
+            .setOnClickListener {
+                engine.makeConnection()
+            }
         findViewById<ToggleButton>(R.id.tb_heartbeat)
             .setOnClickListener {
                 val checked = findViewById<ToggleButton>(R.id.tb_heartbeat).isChecked
@@ -147,7 +155,7 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
 
     private fun initView() {
         findViewById<EditText>(R.id.et_url)
-            .setText("https://cce6-117-22-144-71.ngrok-free.app")
+            .setText("https://e272-117-22-144-73.ngrok-free.app")
         val findViewById = findViewById<RecyclerView>(R.id.rv_list)
         findViewById.adapter = mainAdapter
 

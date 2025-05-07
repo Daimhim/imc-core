@@ -1,11 +1,9 @@
 package org.daimhim.imc_core.demo
 
-import com.custom.socket_connect.NetCheckState
 import org.daimhim.imc_core.IDetectionResults
 import org.daimhim.imc_core.NST
 import org.daimhim.imc_core.NetCheckConfig
 import org.daimhim.imc_core.RapidResponseForceV2
-import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
 
 val UNKNOWN = 0//网络状态未知

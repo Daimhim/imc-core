@@ -115,7 +115,6 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
                 determineMaximumHeartbeat = false // 确定最大心跳间隔
             }
             println("IHeartbeat.心跳失败次数：${curHearFailure} determineMaximumHeartbeat ${determineMaximumHeartbeat}")
-            webSocketClient?.resetStartAutoConnect()
             // 唤起重新链接，其内部会调用停止心跳
             webSocketClient?.resetStartAutoConnect()
             return null

@@ -1,4 +1,4 @@
-package com.custom.socket_connect
+package org.daimhim.imc_core.demo
 
 /**
  * @Description 网络状态检测结果枚举类
