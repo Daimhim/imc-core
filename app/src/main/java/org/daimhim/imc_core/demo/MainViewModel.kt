@@ -20,7 +20,7 @@ class MainViewModel : ViewModel() {
     val onMessage : SharedFlow<MainItem> =_onMessage
 
 //    private val BASE_URL = ""
-    val BASE_URL = "https://537b-117-22-144-111.ngrok-free.app"
+    val BASE_URL = "https://2400-117-22-144-14.ngrok-free.app"
 //    private val BASE_URL = "http://e6ebacd.r15.cpolar.top"
 //    private val BASE_URL = ""
 

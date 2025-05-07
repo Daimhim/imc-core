@@ -62,12 +62,15 @@ class AlarmTimeoutScheduler : ITimeoutScheduler {
         synchronized(sync){
             if (isStop) return
             isStop = true
+            AlarmTimeoutBroadcastReceiver.unregisterSub("${ALARM_TIMEOUT_ACTION}_${alarmId}")
+            if (pendingIntent == null){
+                return
+            }
             (ContextHelper
                 .getApplication()
                 .getSystemService(Context.ALARM_SERVICE) as AlarmManager)
                 .cancel(pendingIntent)
             pendingIntent = null
-            AlarmTimeoutBroadcastReceiver.unregisterSub("${ALARM_TIMEOUT_ACTION}_${alarmId}")
         }
     }
     private var call : Callable<Void>? = null

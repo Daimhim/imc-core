@@ -1,7 +1,6 @@
 package org.daimhim.imc_core
 
 import okhttp3.internal.checkDuration
-import org.daimhim.imc_core.V2FixedHeartbeat.Builder
 import timber.multiplatform.log.Timber
 import java.util.concurrent.Callable
 import java.util.concurrent.TimeUnit
@@ -42,7 +41,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     /**
      * 连接中状态 连接结果，open/close
      */
-    private var isConnecting_Automatically = false
+    private var isConnectingAutomatically = false
 
     /**
      * 进入等待下一次连接
@@ -57,9 +56,9 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
 
 
     // 初始值
-    private val initReconnectDelay = 1000L
-    internal var reconnectDelay = initReconnectDelay  // Reconnect delay, starts at 1
-    var maxReconnectDelay = 128_1000L
+    private val initReconnectDelay = builder.initReconnectDelay.toLong()
+    private val maxReconnectDelay = builder.maxReconnectDelay.toLong()
+    private var reconnectDelay = initReconnectDelay  // Reconnect delay, starts at 1
 
     private val timeoutCall = object : Callable<Void> {
         override fun call(): Void? {
@@ -78,7 +77,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     override fun abnormalDisconnectionAndAutomaticReconnection() {
         // 连接结果初始化
         synchronized(syncConnectionLost) {
-            isConnecting_Automatically = false
+            isConnectingAutomatically = false
         }
         // 初次还是多次
         if (isAutomaticallyConnecting) {
@@ -96,7 +95,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     }
 
     override fun startAutoConnect(){
-        Timber.i("开始抢救 isConnecting_Automatically:${isConnecting_Automatically} ${isAutomaticallyConnecting} isOpen:${isOpen()}")
+        Timber.i("开始抢救 isConnecting_Automatically:${isConnectingAutomatically} ${isAutomaticallyConnecting} isOpen:${isOpen()}")
         synchronized(syncConnectionLost) {
             if (isOpen()) {
                 // 不需要抢救
@@ -106,7 +105,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
                 //多次启动 直接返回
                 return
             }
-            if (isConnecting_Automatically) {
+            if (isConnectingAutomatically) {
                 // 正在连接 直接返回
                 return
             }
@@ -120,7 +119,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         Timber.i("停止抢救")
         synchronized(syncConnectionLost) {
             isAutomaticallyConnecting = false
-            isConnecting_Automatically = false
+            isConnectingAutomatically = false
             isWaitingNextAutomaticConnection = false
             reconnectDelay = initReconnectDelay
             timeoutScheduler.stop()
@@ -144,12 +143,12 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         }
     }
     private fun startConnect() {
-        Timber.i("startConnect 111 ${isConnecting_Automatically}")
+        Timber.i("startConnect 111 ${isConnectingAutomatically}")
         synchronized(syncConnectionLost) {
-            if (isConnecting_Automatically) {
+            if (isConnectingAutomatically) {
                 return
             }
-            isConnecting_Automatically = true
+            isConnectingAutomatically = true
         }
         webSocketClient?.reconnect()
         Timber.i("startConnect 222")
@@ -162,16 +161,22 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         startConnect()
     }
 
-    fun isOpen():Boolean{
+    private fun isOpen():Boolean{
         return webSocketClient?.isOpen == true
     }
 
     class Builder{
-        internal var maxReconnectDelay = 128 * 1000
+        internal var initReconnectDelay : Int = 1000
+        internal var maxReconnectDelay : Int = 128 * 1000
 
         fun maxReconnectDelay(delay: Long, unit: TimeUnit) = apply {
             maxReconnectDelay = checkDuration("maxReconnectDelay", delay, unit)
         }
+
+        fun initReconnectDelay(delay: Long, unit: TimeUnit) = apply {
+            initReconnectDelay = checkDuration("initReconnectDelay", delay, unit)
+        }
+
         // 心跳调度器
         internal var timeoutScheduler : ITimeoutScheduler = RRFTimeoutScheduler()
 
@@ -179,6 +184,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             this.timeoutScheduler = timeoutScheduler
             return this
         }
+
         fun build():ProgressiveAutoConnect{
             return ProgressiveAutoConnect(this)
         }

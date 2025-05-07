@@ -155,7 +155,7 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
 
     private fun initView() {
         findViewById<EditText>(R.id.et_url)
-            .setText("https://e272-117-22-144-73.ngrok-free.app")
+            .setText("https://2400-117-22-144-14.ngrok-free.app")
         val findViewById = findViewById<RecyclerView>(R.id.rv_list)
         findViewById.adapter = mainAdapter
 
