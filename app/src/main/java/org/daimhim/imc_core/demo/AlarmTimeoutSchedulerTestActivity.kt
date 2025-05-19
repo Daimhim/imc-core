@@ -3,13 +3,12 @@ package org.daimhim.imc_core.demo
 import android.os.Bundle
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
-import org.daimhim.imc_core.ITimeoutScheduler
 import timber.multiplatform.log.Timber
 import java.util.concurrent.Callable
 
 class AlarmTimeoutSchedulerTestActivity : AppCompatActivity() {
-    private val alarmTimeoutScheduler = AlarmTimeoutScheduler("自动连接")
-    private val alarmTimeoutScheduler2 = IntelligentHeartbeatAlarmTimeoutScheduler2("心跳机制")
+    private val alarmTimeoutScheduler = AutoConnectAlarmTimeoutScheduler("自动连接")
+    private val alarmTimeoutScheduler2 = HeartbeatAlarmTimeoutScheduler("心跳机制")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_alarm_timeout_scheduler_test)
