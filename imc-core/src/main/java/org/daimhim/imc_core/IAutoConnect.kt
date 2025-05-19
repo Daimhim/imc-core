@@ -150,7 +150,11 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             }
             isConnectingAutomatically = true
         }
-        webSocketClient?.reconnect()
+        try {
+            webSocketClient?.reconnect()
+        }catch (e: Exception){
+            e.printStackTrace()
+        }
         Timber.i("startConnect 222")
     }
 

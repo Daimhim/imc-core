@@ -46,13 +46,13 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
                     .setHeartbeatStep(10)
                     .setMinHeartbeat(35L)
                     .setInitialHeartbeat(45L)
-                    .setTimeoutScheduler(AlarmTimeoutScheduler())
+                    .setTimeoutScheduler(HeartbeatAlarmTimeoutScheduler("智能心跳"))
                     .build()
             )
             .setAutoConnect(
                 ProgressiveAutoConnect
                     .Builder()
-                    .setTimeoutScheduler(AlarmTimeoutScheduler())
+                    .setTimeoutScheduler(AutoConnectAlarmTimeoutScheduler("自动连接"))
                     .build()
             )
             .build()
@@ -155,7 +155,7 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
 
     private fun initView() {
         findViewById<EditText>(R.id.et_url)
-            .setText("https://2400-117-22-144-14.ngrok-free.app")
+            .setText("https://aac1-117-22-144-244.ngrok-free.app")
         val findViewById = findViewById<RecyclerView>(R.id.rv_list)
         findViewById.adapter = mainAdapter
 
