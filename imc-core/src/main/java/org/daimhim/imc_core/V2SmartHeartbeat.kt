@@ -53,7 +53,7 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
     /**
      * 是否开始心跳探测，必须稳定心跳三下
      */
-    private var isStartDetect = false
+    private var isStartDetect = builder.isStartDetect
 
     /**
      * 心跳调度器
@@ -89,7 +89,8 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
                         // 心跳成功次数超过3次
                         isStartDetect = true // 开始心跳探测
                     }
-                }else{
+                }
+                else{
                     // 增加心跳间隔
                     if (!determineMaximumHeartbeat){
                         curHeartbeat += heartbeatStep // 心跳间隔增加
@@ -176,6 +177,10 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
         internal var heartbeatStep = 5
         // 心跳最小间隔
         internal var minHeartbeat = 15L
+        /**
+         * 是否智能探测
+         */
+        internal var isStartDetect = false
         // 心跳调度器
         internal var timeoutScheduler : ITimeoutScheduler = RRFTimeoutScheduler()
 
@@ -207,6 +212,10 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
         }
         fun setCustomHeartbeat(customHeartbeat: CustomHeartbeat) : Builder{
             this.customHeartbeat = customHeartbeat
+            return this
+        }
+        fun setIsStartDetect(isStartDetect: Boolean) : Builder{
+            this.isStartDetect = isStartDetect
             return this
         }
         fun build() : V2SmartHeartbeat{

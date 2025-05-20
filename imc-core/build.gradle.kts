@@ -13,9 +13,9 @@ java {
 }
 
 dependencies {
-    compileOnly("com.squareup.okhttp3:okhttp:4.9.0")
+    compileOnly("com.squareup.okhttp3:okhttp:4.9.3")
     compileOnly("com.github.Daimhim.timber-multiple-platforms:timber:1.0.8")
-    compileOnly("org.java-websocket:Java-WebSocket:1.5.4")
+    compileOnly("org.java-websocket:Java-WebSocket:1.6.0")
 }
 
 afterEvaluate{
