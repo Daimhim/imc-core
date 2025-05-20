@@ -6,11 +6,11 @@ plugins {
 
 android {
     namespace = "org.daimhim.imc_core.demo"
-    compileSdk = 35
+    compileSdkVersion(33)
     defaultConfig {
         applicationId  = "org.daimhim.imc_core.demo"
-        minSdk = 22
-        targetSdk = 30
+        minSdkVersion(22)
+        targetSdkVersion(30)
         versionCode = 1
         versionName = "1.0"
 
@@ -38,7 +38,7 @@ dependencies {
     implementation ("androidx.activity:activity-ktx:1.7.2")
     implementation(project(":imc-core"))
     implementation("com.github.Daimhim:SimpleAdapter:1.1.0")
-    implementation("com.squareup.okhttp3:okhttp:4.9.3")
+    implementation("com.squareup.okhttp3:okhttp:4.9.0")
     implementation("com.github.Daimhim.timber-multiple-platforms:timber-android:1.0.8")
     implementation("androidx.core:core-ktx:1.7.0")
     implementation("androidx.appcompat:appcompat:1.4.1")
@@ -50,7 +50,7 @@ dependencies {
     implementation("com.github.kongqw:NetworkMonitor:1.2.0")
 //    implementation("com.tencent.mars:mars-wrapper:1.2.5")
     implementation("com.tencent.mars:mars-core:1.2.5")
-    implementation("org.java-websocket:Java-WebSocket:1.6.0")
+    implementation("org.java-websocket:Java-WebSocket:1.5.4")
     implementation("com.google.android.gms:play-services-cronet:18.0.1")
     implementation("org.chromium.net:cronet-api:108.5359.79")
     testImplementation("com.github.Daimhim.timber-multiple-platforms:timber-desktop:1.0.8")
