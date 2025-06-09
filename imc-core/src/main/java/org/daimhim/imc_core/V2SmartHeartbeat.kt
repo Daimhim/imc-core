@@ -79,45 +79,7 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
     }
     private val timeoutCall = object : Callable<Void> {
         override fun call(): Void? {
-            IMCLog.i("IHeartbeat.心跳回调 timeoutScheduler hasPongBeenReceived:$hasPongBeenReceived isStartDetect:$isStartDetect curHearSuccess:$curHearSuccess curHearFailure:$curHearFailure")
-            // 心跳成功
-            if (hasPongBeenReceived){
-                curHearFailure = 0 // 重置心跳失败次数
-                if (!isStartDetect){ //未稳定
-                    curHearSuccess++ // 累计增加心跳成功一次
-                    if (curHearSuccess > MAX_HEARTBEAT_SUCCESS){
-                        // 心跳成功次数超过3次
-                        isStartDetect = true // 开始心跳探测
-                    }
-                }
-                else{
-                    // 增加心跳间隔
-                    if (!determineMaximumHeartbeat){
-                        curHeartbeat += heartbeatStep // 心跳间隔增加
-                    }
-                }
-                hasPongBeenReceived = false // 重置心跳成功
-                sendHeartbeat() // 发送心跳
-                println("IHeartbeat.心跳回调 timeoutScheduler start $determineMaximumHeartbeat")
-                timeoutScheduler.start(curHeartbeat * 1000) // 开始下一次心跳计时
-                return null
-            }
-            curHearSuccess = 0 // 重置心跳成功
-            // 心跳失败
-            curHearFailure++ // 累计增加心跳失败一次
-            if (curHearFailure > MAX_HEARTBEAT_FAILURE){
-                // 心跳失败次数超过5次
-                if (curHeartbeat > minHeartbeat){
-                    curHeartbeat -= heartbeatStep // 减少心跳间隔
-                }
-                determineMaximumHeartbeat = true // 确定最大心跳间隔
-            }else{
-                // 心跳失败次数小于5次
-                determineMaximumHeartbeat = false // 确定最大心跳间隔
-            }
-            println("IHeartbeat.心跳失败次数：${curHearFailure} determineMaximumHeartbeat ${determineMaximumHeartbeat}")
-            // 唤起重新链接，其内部会调用停止心跳
-            webSocketClient?.resetStartAutoConnect()
+            onHeartbeatFailure()
             return null
         }
     }
@@ -149,7 +111,7 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
 
     override fun startConnectionLostTimer() {
         IMCLog.i("sendHeartbeat startConnectionLostTimer")
-        println("IHeartbeat.startConnectionLostTimer $isStopHeartbeat $curHeartbeat")
+        IMCLog.i("IHeartbeat.startConnectionLostTimer isStopHeartbeat:$isStopHeartbeat $curHeartbeat")
         synchronized(sync){
             if (isStopHeartbeat) return
             isStopHeartbeat = true
@@ -158,14 +120,67 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
         }
     }
 
-    override fun stopConnectionLostTimer() {
-        println("IHeartbeat.stopConnectionLostTimer $isStopHeartbeat")
+    override fun stopConnectionLostTimer(isError:Boolean) {
+        IMCLog.i("IHeartbeat.stopConnectionLostTimer isError:${isError} isStopHeartbeat:$isStopHeartbeat")
         synchronized(sync){
             if (!isStopHeartbeat) return
             isStopHeartbeat = false
             hasPongBeenReceived = false
             timeoutScheduler.stop()
+            if (isError){
+                onHeartbeatFailure(true)
+            }
         }
+    }
+
+    /**
+     * 心跳失败回调
+     */
+    private fun onHeartbeatFailure(isError:Boolean = false){
+        IMCLog.i("IHeartbeat.心跳回调 timeoutScheduler hasPongBeenReceived:$hasPongBeenReceived isStartDetect:$isStartDetect curHearSuccess:$curHearSuccess curHearFailure:$curHearFailure")
+        // 心跳成功
+        if (hasPongBeenReceived && webSocketClient?.isOpen == true){
+            if (!isStartDetect){ //未稳定
+                curHearSuccess++ // 累计增加心跳成功一次
+                if (curHearSuccess > MAX_HEARTBEAT_SUCCESS){
+                    // 心跳成功次数超过3次
+                    isStartDetect = true // 开始心跳探测
+                }
+            }
+            else{
+                // 增加心跳间隔
+                if (!determineMaximumHeartbeat){
+                    curHeartbeat += heartbeatStep // 心跳间隔增加
+                    curHearFailure = 0 // 重置心跳失败次数
+                    curHearSuccess = 0 // 重置心跳成功
+                }
+            }
+            hasPongBeenReceived = false // 重置心跳成功
+            sendHeartbeat() // 发送心跳
+            println("IHeartbeat.心跳回调 timeoutScheduler start $determineMaximumHeartbeat")
+            timeoutScheduler.start(curHeartbeat * 1000) // 开始下一次心跳计时
+            return
+        }
+        // 心跳失败
+        curHearFailure++ // 累计增加心跳失败一次
+        if (curHearFailure > MAX_HEARTBEAT_FAILURE){
+            // 心跳失败次数超过5次
+            if (curHeartbeat > minHeartbeat){
+                curHeartbeat -= heartbeatStep // 减少心跳间隔
+                curHearFailure = 0 // 重置心跳失败次数
+                curHearSuccess = 0 // 重置心跳成功
+            }
+            determineMaximumHeartbeat = true // 确定最大心跳间隔
+        }else{
+            // 心跳失败次数小于5次
+            determineMaximumHeartbeat = false // 确定最大心跳间隔
+        }
+        println("IHeartbeat.心跳失败次数：${curHearFailure} determineMaximumHeartbeat ${determineMaximumHeartbeat}")
+        // 唤起重新链接，其内部会调用停止心跳
+        if (isError){
+            return
+        }
+        webSocketClient?.resetStartAutoConnect()
     }
 
     class Builder{

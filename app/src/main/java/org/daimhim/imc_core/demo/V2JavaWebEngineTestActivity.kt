@@ -45,7 +45,7 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
                     .Builder()
                     .setHeartbeatStep(10)
                     .setMinHeartbeat(35L)
-                    .setInitialHeartbeat(45L)
+                    .setInitialHeartbeat(65L)
                     .setTimeoutScheduler(HeartbeatAlarmTimeoutScheduler("智能心跳"))
                     .build()
             )

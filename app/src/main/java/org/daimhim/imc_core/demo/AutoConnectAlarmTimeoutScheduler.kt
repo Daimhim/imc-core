@@ -13,12 +13,12 @@ import java.util.concurrent.Callable
 
 class AutoConnectAlarmTimeoutScheduler(private val name:String) : ITimeoutScheduler {
     companion object {
-        const val ALARM_TIMEOUT_ACTION = "com.zjkj.im_core.action.AUTO_CONNECT_ALARM_TIMEOUT_ACTION"
+        const val AUTO_CONNECT_ALARM_TIMEOUT_ACTION = "com.zjkj.im_core.action.AUTO_CONNECT_ALARM_TIMEOUT_ACTION"
     }
     private var pendingIntent:PendingIntent
     init {
         Timber.i("AlarmTimeoutScheduler.init $name")
-        val intent = Intent(ALARM_TIMEOUT_ACTION).apply {
+        val intent = Intent(AUTO_CONNECT_ALARM_TIMEOUT_ACTION).apply {
             setPackage(ContextHelper.getApplication().packageName)
         }
         pendingIntent = PendingIntent.getBroadcast(
@@ -39,12 +39,12 @@ class AutoConnectAlarmTimeoutScheduler(private val name:String) : ITimeoutSchedu
             val alarmManager = ContextHelper
                 .getApplication()
                 .getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            AlarmTimeoutBroadcastReceiver.setCall(call,name)
             alarmManager.setExact(
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
                 triggerTime,
                 pendingIntent
             )
-            AlarmTimeoutBroadcastReceiver.setCall(call,name)
         }
     }
 
@@ -63,6 +63,7 @@ class AutoConnectAlarmTimeoutScheduler(private val name:String) : ITimeoutSchedu
     private var call : Callable<Void>? = null
     override fun setCallback(call: Callable<Void>) {
         this.call = call
+        AlarmTimeoutBroadcastReceiver.setCall(call,name)
     }
 
 

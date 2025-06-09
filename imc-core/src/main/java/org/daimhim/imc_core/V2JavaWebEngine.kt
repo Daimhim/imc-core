@@ -149,7 +149,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
     }
 
     private fun cleanPreviousConnection() {
-        webSocketClient?.stopConnectionLostTimer()
+        webSocketClient?.stopConnectionLostTimerEx(false)
         webSocketClient?.stopAutoConnect()
     }
 
@@ -247,10 +247,10 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         private var linkNative : ILinkNative? = null
 
         fun onChangeMode(iLinkNative: ILinkNative){
-            this.linkNative?.stopConnectionLostTimer()
+            stopConnectionLostTimerEx()
             this.linkNative = iLinkNative
             this.linkNative?.initLinkNative(this)
-            this.linkNative?.startConnectionLostTimer()
+            startConnectionLostTimer()
             if (!isOpen){
                 return
             }
@@ -258,7 +258,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         }
         override fun onOpen(handshakedata: ServerHandshake?) {
             retryingSendingCache()
-            linkNative?.startConnectionLostTimer()
+            startConnectionLostTimerEx()
             linkNative?.updateLastPong()
             stopAutoConnect()
             javaWebSocketListener?.onOpen(handshakedata)
@@ -283,7 +283,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
             }
             javaWebSocketListener?.onError(IllegalStateException("code:${code} reason${reason} remote${remote}"))
             // 停止心跳
-            stopConnectionLostTimer()
+            stopConnectionLostTimerEx(true)
             // z自动重连
             abnormalDisconnectionAndAutomaticReconnection()
         }
@@ -294,7 +294,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
                 return
             }
             // 停止心跳
-            stopConnectionLostTimer()
+            stopConnectionLostTimerEx(true)
             // z自动重连
             abnormalDisconnectionAndAutomaticReconnection()
         }
@@ -332,12 +332,11 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
             linkNative?.setConnectionLostTimeout(connectionLostTimeout)
         }
 
-        override fun startConnectionLostTimer() {
+        fun startConnectionLostTimerEx() {
             linkNative?.startConnectionLostTimer()
         }
-
-        public override fun stopConnectionLostTimer() {
-            linkNative?.stopConnectionLostTimer()
+        public fun stopConnectionLostTimerEx(isError:Boolean = false) {
+            linkNative?.stopConnectionLostTimer(isError)
         }
 
         /*

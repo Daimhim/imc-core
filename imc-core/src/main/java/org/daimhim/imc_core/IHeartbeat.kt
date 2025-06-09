@@ -8,7 +8,7 @@ interface ILinkNative{
     fun setConnectionLostTimeout(connectionLostTimeout: Int)
     fun updateLastPong()
     fun startConnectionLostTimer()
-    fun stopConnectionLostTimer()
+    fun stopConnectionLostTimer(isError:Boolean = false)
     fun sendHeartbeat()
 }
 

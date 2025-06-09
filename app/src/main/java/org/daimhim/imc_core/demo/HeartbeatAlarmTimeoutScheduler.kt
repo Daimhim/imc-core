@@ -13,12 +13,12 @@ import java.util.concurrent.Callable
 
 class HeartbeatAlarmTimeoutScheduler(private val name:String) : ITimeoutScheduler {
     companion object {
-        const val ALARM_TIMEOUT_ACTION = "com.zjkj.im_core.action.HEARTBEAT_ALARM_TIMEOUT_ACTION"
+        const val HEARTBEAT_ALARM_TIMEOUT_ACTION = "com.zjkj.im_core.action.HEARTBEAT_ALARM_TIMEOUT_ACTION"
     }
     private var pendingIntent:PendingIntent
     init {
         Timber.i("AlarmTimeoutScheduler.init $name")
-        val intent = Intent(ALARM_TIMEOUT_ACTION).apply {
+        val intent = Intent(HEARTBEAT_ALARM_TIMEOUT_ACTION).apply {
             setPackage(ContextHelper.getApplication().packageName)
         }
         pendingIntent = PendingIntent.getBroadcast(

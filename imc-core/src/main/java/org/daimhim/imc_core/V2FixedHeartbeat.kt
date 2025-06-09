@@ -33,16 +33,7 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
      */
     private val timeoutCall = object : Callable<Void> {
         override fun call(): Void? {
-            IMCLog.i("IHeartbeat.timeoutScheduler $hasPongBeenReceived")
-            // 心跳成功
-            if (hasPongBeenReceived){
-                hasPongBeenReceived = false // 重置心跳成功
-                sendHeartbeat() // 发送心跳
-                timeoutScheduler.start(curHeartbeat * 1000) // 开始下一次心跳计时
-                return null
-            }
-            // 唤起重新链接,其内部会调用停止心跳
-            webSocketClient?.resetStartAutoConnect()
+            onHeartbeatFailure()
             return null
         }
     }
@@ -83,7 +74,7 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
         }
     }
 
-    override fun stopConnectionLostTimer() {
+    override fun stopConnectionLostTimer(isError:Boolean) {
         synchronized(sync){
             if (!isStopHeartbeat) return
             isStopHeartbeat = false
@@ -103,6 +94,19 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
         } else {
             webSocketClient?.send(customHeartbeat?.stringHeartbeat())
         }
+    }
+
+    private fun onHeartbeatFailure() {
+        IMCLog.i("IHeartbeat.timeoutScheduler $hasPongBeenReceived")
+        // 心跳成功
+        if (hasPongBeenReceived){
+            hasPongBeenReceived = false // 重置心跳成功
+            sendHeartbeat() // 发送心跳
+            timeoutScheduler.start(curHeartbeat * 1000) // 开始下一次心跳计时
+            return
+        }
+        // 唤起重新链接,其内部会调用停止心跳
+        webSocketClient?.resetStartAutoConnect()
     }
 
     class Builder {
