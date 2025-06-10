@@ -247,10 +247,10 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         private var linkNative : ILinkNative? = null
 
         fun onChangeMode(iLinkNative: ILinkNative){
-            stopConnectionLostTimerEx()
             this.linkNative = iLinkNative
             this.linkNative?.initLinkNative(this)
-            startConnectionLostTimer()
+            stopConnectionLostTimerEx()
+            startConnectionLostTimerEx()
             if (!isOpen){
                 return
             }

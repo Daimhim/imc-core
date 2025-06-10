@@ -110,7 +110,6 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
     }
 
     override fun startConnectionLostTimer() {
-        IMCLog.i("sendHeartbeat startConnectionLostTimer")
         IMCLog.i("IHeartbeat.startConnectionLostTimer isStopHeartbeat:$isStopHeartbeat $curHeartbeat")
         synchronized(sync){
             if (isStopHeartbeat) return
@@ -137,7 +136,7 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
      * 心跳失败回调
      */
     private fun onHeartbeatFailure(isError:Boolean = false){
-        IMCLog.i("IHeartbeat.心跳回调 timeoutScheduler hasPongBeenReceived:$hasPongBeenReceived isStartDetect:$isStartDetect curHearSuccess:$curHearSuccess curHearFailure:$curHearFailure")
+        IMCLog.i("IHeartbeat.心跳回调 timeoutScheduler isError${isError} hasPongBeenReceived:$hasPongBeenReceived isStartDetect:$isStartDetect curHearSuccess:$curHearSuccess curHearFailure:$curHearFailure")
         // 心跳成功
         if (hasPongBeenReceived && webSocketClient?.isOpen == true){
             if (!isStartDetect){ //未稳定
@@ -157,7 +156,7 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
             }
             hasPongBeenReceived = false // 重置心跳成功
             sendHeartbeat() // 发送心跳
-            println("IHeartbeat.心跳回调 timeoutScheduler start $determineMaximumHeartbeat")
+            IMCLog.i("IHeartbeat.心跳回调 timeoutScheduler start $determineMaximumHeartbeat")
             timeoutScheduler.start(curHeartbeat * 1000) // 开始下一次心跳计时
             return
         }
