@@ -8,13 +8,13 @@ group = "org.daimhim.imc.core"
 version = "3.0.5.30-SNAPSHOT"
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
 }
 
 dependencies {
     compileOnly("com.squareup.okhttp3:okhttp:4.9.0")
-    compileOnly("com.github.Daimhim.timber-multiple-platforms:timber:1.0.6.3")
+    compileOnly("com.github.Daimhim.timber-multiple-platforms:timber:1.0.6.3.6")
     compileOnly("org.java-websocket:Java-WebSocket:1.5.4")
 }
 
