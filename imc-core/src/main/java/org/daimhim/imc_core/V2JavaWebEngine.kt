@@ -1,6 +1,5 @@
 package org.daimhim.imc_core
 
-import okio.ByteString.Companion.toByteString
 import org.java_websocket.WebSocket
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.drafts.Draft_6455
@@ -8,7 +7,6 @@ import org.java_websocket.enums.ReadyState
 import org.java_websocket.enums.Role
 import org.java_websocket.framing.Framedata
 import org.java_websocket.handshake.ServerHandshake
-import timber.multiplatform.log.Timber
 import java.net.URI
 import java.nio.ByteBuffer
 
@@ -43,24 +41,24 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
     // socket回调
     private val javaWebsocketListener = object : JavaWebSocketListener {
         override fun onOpen(handshakedata: ServerHandshake?) {
-            Timber.i("onOpen ${handshakedata?.httpStatus} ${handshakedata?.httpStatusMessage}")
+            IMCLog.i("onOpen ${handshakedata?.httpStatus} ${handshakedata?.httpStatusMessage}")
             imcStatusListener?.connectionSucceeded()
         }
 
         override fun onMessage(message: String) {
-            Timber.i("onMessage message:${message}")
+            IMCLog.i("onMessage message:${message}")
             imcListenerManager
                 .onMessage(this@V2JavaWebEngine, message)
         }
 
         override fun onMessage(bytes: ByteBuffer) {
-            Timber.i("onMessage bytes ${bytes.limit()}")
+            IMCLog.i("onMessage bytes ${bytes.limit()}")
             imcListenerManager
-                .onMessage(this@V2JavaWebEngine, bytes.toByteString())
+                .onMessage(this@V2JavaWebEngine, byteBufferToString(bytes))
         }
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {
-            Timber.i("onClose code:${code} reason:${reason} remote:${remote}")
+            IMCLog.i("onClose code:${code} reason:${reason} remote:${remote}")
             imcStatusListener
                 ?.connectionClosed(code, reason)
             // 重置中
@@ -70,7 +68,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         }
 
         override fun onError(ex: Exception) {
-            Timber.i(ex, "onError")
+            IMCLog.i(ex, "onError")
             imcStatusListener?.connectionLost(ex)
 //            forceClose(CONNECTION_UNEXPECTEDLY_CLOSED, "${ex.message}")
             // 重置中
@@ -81,11 +79,16 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
 
 
     }
-
+    // 新增转换方法
+    private fun byteBufferToString(byteBuffer: ByteBuffer): String {
+        val bytes = ByteArray(byteBuffer.remaining())
+        byteBuffer.get(bytes)
+        return String(bytes)
+    }
     override fun engineOn(key: String) {
         // 更换URL
         synchronized(syncJWE) {
-            Timber.i("engineOn ${webSocketClient == null}")
+            IMCLog.i("engineOn ${webSocketClient == null}")
             if (webSocketClient == null) {
                 val finalUrl: String = when {
                     key.startsWith("http:", ignoreCase = true) -> {
@@ -208,7 +211,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
     }
 
     override fun onChangeMode(mode: Int) {
-        Timber.i("sendHeartbeat onChangeMode $mode")
+        IMCLog.i("sendHeartbeat onChangeMode $mode")
         // 心跳间隔 单位 秒
         heartbeatMode[mode]?.let {
             webSocketClient?.onChangeMode(it)
@@ -368,7 +371,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
          * 重置自动连接，用于更新配置
          */
         internal fun resetStartAutoConnect() {
-            Timber.i("重置抢救，之前记录")
+            IMCLog.i("重置抢救，之前记录")
             iLinkNative?.stopConnectionLostTimer()
             autoConnect?.resetStartAutoConnect()
         }

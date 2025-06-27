@@ -1,7 +1,6 @@
 package org.daimhim.imc_core
 
 import okhttp3.internal.checkDuration
-import timber.multiplatform.log.Timber
 import java.util.concurrent.Callable
 import java.util.concurrent.TimeUnit
 
@@ -95,7 +94,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     }
 
     override fun startAutoConnect(){
-        Timber.i("开始抢救 isConnecting_Automatically:${isConnectingAutomatically} ${isAutomaticallyConnecting} isOpen:${isOpen()}")
+        IMCLog.i("开始抢救 isConnecting_Automatically:${isConnectingAutomatically} ${isAutomaticallyConnecting} isOpen:${isOpen()}")
         synchronized(syncConnectionLost) {
             if (isOpen()) {
                 // 不需要抢救
@@ -116,7 +115,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     }
 
     override fun stopAutoConnect(){
-        Timber.i("停止抢救")
+        IMCLog.i("停止抢救")
         synchronized(syncConnectionLost) {
             isAutomaticallyConnecting = false
             isConnectingAutomatically = false
@@ -129,7 +128,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
      * 等待下一次 自动连接
      */
     private fun waitingNextAutomaticConnection(delay: Long) {
-        Timber.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection} reconnectDelay:$reconnectDelay")
+        IMCLog.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection} reconnectDelay:$reconnectDelay")
         synchronized(syncConnectionLost) {
             if (isWaitingNextAutomaticConnection) {
                 return
@@ -139,11 +138,11 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             }
             isWaitingNextAutomaticConnection = true
             timeoutScheduler.start(reconnectDelay)
-            Timber.i("等待下一次 111 ${reconnectDelay}")
+            IMCLog.i("等待下一次 111 ${reconnectDelay}")
         }
     }
     private fun startConnect() {
-        Timber.i("startConnect 111 ${isConnectingAutomatically}")
+        IMCLog.i("startConnect 111 ${isConnectingAutomatically}")
         synchronized(syncConnectionLost) {
             if (isConnectingAutomatically) {
                 return
@@ -155,7 +154,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         }catch (e: Exception){
             e.printStackTrace()
         }
-        Timber.i("startConnect 222")
+        IMCLog.i("startConnect 222")
     }
 
     private fun autoReconnect(){

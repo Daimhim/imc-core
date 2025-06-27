@@ -13,7 +13,6 @@ import org.java_websocket.framing.CloseFrame
 import org.java_websocket.framing.Framedata
 import org.java_websocket.framing.PingFrame
 import org.java_websocket.handshake.ServerHandshake
-import timber.multiplatform.log.Timber
 import java.net.URI
 import java.nio.ByteBuffer
 import java.util.*
@@ -44,24 +43,24 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
     // socket回调
     private val javaWebsocketListener = object : JavaWebSocketListener {
         override fun onOpen(handshakedata: ServerHandshake?) {
-            Timber.i("onOpen ${handshakedata?.httpStatus} ${handshakedata?.httpStatusMessage}")
+            IMCLog.i("onOpen ${handshakedata?.httpStatus} ${handshakedata?.httpStatusMessage}")
             imcStatusListener?.connectionSucceeded()
         }
 
         override fun onMessage(message: String) {
-            Timber.i("onMessage message:${message}")
+            IMCLog.i("onMessage message:${message}")
             imcListenerManager
                 .onMessage(this@JavaWebEngine, message)
         }
 
         override fun onMessage(bytes: ByteBuffer) {
-            Timber.i("onMessage bytes ${bytes.limit()}")
+            IMCLog.i("onMessage bytes ${bytes.limit()}")
             imcListenerManager
                 .onMessage(this@JavaWebEngine, bytes.toByteString())
         }
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {
-            Timber.i("onClose code:${code} reason:${reason} remote:${remote}")
+            IMCLog.i("onClose code:${code} reason:${reason} remote:${remote}")
             imcStatusListener
                 ?.connectionClosed(code, reason)
             // 重置中
@@ -71,7 +70,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         override fun onError(ex: Exception) {
-            Timber.i(ex, "onError")
+            IMCLog.i(ex, "onError")
             imcStatusListener?.connectionLost(ex)
 //            forceClose(CONNECTION_UNEXPECTEDLY_CLOSED, "${ex.message}")
             // 重置中
@@ -86,7 +85,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
     override fun engineOn(key: String) {
         // 更换URL
         synchronized(syncJWE) {
-            Timber.i("engineOn ${webSocketClient == null}")
+            IMCLog.i("engineOn ${webSocketClient == null}")
             if (webSocketClient == null) {
                 val finalUrl: String = when {
                     key.startsWith("http:", ignoreCase = true) -> {
@@ -208,7 +207,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
     }
 
     override fun onChangeMode(mode: Int) {
-        Timber.i("onChangeMode $mode")
+        IMCLog.i("onChangeMode $mode")
         // 心跳间隔 单位 秒
         if (mode == 0) {
             webSocketClient?.connectionLostTimeout = builder.minHeartbeatInterval
@@ -249,7 +248,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         // 心跳超时
         private val timedTasks = object : Comparable<Pair<String, Any?>> {
             override fun compareTo(other: Pair<String, Any?>): Int {
-                Timber.i("timeoutCallback ${other.first}")
+                IMCLog.i("timeoutCallback ${other.first}")
                 if (other.first == HEARTBEAT_INTERVAL) {
                     // 心跳
                     heartbeatInterval(other)
@@ -337,7 +336,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
 
         override fun onWebsocketPong(conn: WebSocket?, f: Framedata?) {
             retryingSendingCache()
-//            Timber.i("onWebsocketPong updateLastPong")
+//            IMCLog.i("onWebsocketPong updateLastPong")
             updateLastPong()
             super.onWebsocketPong(conn, f)
         }
@@ -354,7 +353,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         override fun setConnectionLostTimeout(connectionLostTimeout: Int) {
-//            Timber.i("setConnectionLostTimeout ${connectionLostTimeout}")
+//            IMCLog.i("setConnectionLostTimeout ${connectionLostTimeout}")
             synchronized(syncConnectionLost) {
                 this.connectionLostTimeout = TimeUnit.MILLISECONDS.toNanos(connectionLostTimeout.toLong())
                 // 是否启动了自动心跳
@@ -373,7 +372,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         override fun startConnectionLostTimer() {
-            Timber.i("startConnectionLostTimer")
+            IMCLog.i("startConnectionLostTimer")
             synchronized(syncConnectionLost) {
                 // 是否启动了自动心跳
                 if (!heartbeatEnable){
@@ -388,7 +387,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         public override fun stopConnectionLostTimer() {
-//            Timber.i("stopConnectionLostTimer")
+//            IMCLog.i("stopConnectionLostTimer")
             synchronized(syncConnectionLost) {
                 // 是否启动了自动心跳
                 if (!heartbeatEnable){
@@ -400,7 +399,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         private fun cancelConnectionLostTimer() {
-//            Timber.i("cancelConnectionLostTimer")
+//            IMCLog.i("cancelConnectionLostTimer")
             rapidResponseForce.unRegister(HEARTBEAT_INTERVAL)
         }
 
@@ -410,14 +409,14 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
                 return
             }
             val timeOut = TimeUnit.NANOSECONDS.toMillis(connectionLostTimeout)
-            Timber.i("restartConnectionLostTimer ${timeOut}")
+            IMCLog.i("restartConnectionLostTimer ${timeOut}")
             cancelConnectionLostTimer()
             rapidResponseForce.register(HEARTBEAT_INTERVAL, timeOut = timeOut)
         }
 
         private fun executeConnectionLostDetection(webSocket: WebSocket, minimumPongTime: Long): Boolean {
-            Timber.i("executeConnectionLostDetection sendPing111 ${customHeartbeat == null}")
-//            Timber.i("executeConnectionLostDetection")
+            IMCLog.i("executeConnectionLostDetection sendPing111 ${customHeartbeat == null}")
+//            IMCLog.i("executeConnectionLostDetection")
             if (getLastPong() < minimumPongTime) {
                 webSocket.closeConnection(
                     CloseFrame.ABNORMAL_CLOSE,
@@ -444,7 +443,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
                     send(customHeartbeat.stringHeartbeat())
                 }
             }
-            Timber.i("executeConnectionLostDetection sendPing222")
+            IMCLog.i("executeConnectionLostDetection sendPing222")
             return true
         }
 
@@ -535,7 +534,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
          * 对外 启动自动连接
          */
         fun startAutoConnect() {
-            Timber.i("开始抢救 isConnecting_Automatically:${isConnecting_Automatically} ${isAutomaticallyConnecting} isOpen:${isOpen}")
+            IMCLog.i("开始抢救 isConnecting_Automatically:${isConnecting_Automatically} ${isAutomaticallyConnecting} isOpen:${isOpen}")
             synchronized(syncConnectionLost) {
                 // 是否启动了 自动抢救
                 if (!rescueEnable) {
@@ -563,7 +562,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
          * 等待下一次 自动连接
          */
         private fun waitingNextAutomaticConnection(delay: Long) {
-            Timber.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection} reconnectDelay:$reconnectDelay")
+            IMCLog.i("等待下一次 ${delay} isWaitingNextAutomaticConnection:${isWaitingNextAutomaticConnection} reconnectDelay:$reconnectDelay")
             synchronized(syncConnectionLost) {
                 if (isWaitingNextAutomaticConnection) {
                     return
@@ -573,7 +572,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
                 }
                 isWaitingNextAutomaticConnection = true
                 rapidResponseForce.register(AUTO_RECONNECT, null, reconnectDelay)
-                Timber.i("等待下一次 111 ${reconnectDelay}")
+                IMCLog.i("等待下一次 111 ${reconnectDelay}")
             }
         }
 
@@ -581,13 +580,13 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
          * 重置自动连接，用于更新配置
          */
         internal fun resetStartAutoConnect() {
-            Timber.i("重置抢救，之前记录${reconnectDelay}")
+            IMCLog.i("重置抢救，之前记录${reconnectDelay}")
             stopAutoConnect()
             startAutoConnect()
         }
 
         fun stopAutoConnect() {
-            Timber.i("停止抢救")
+            IMCLog.i("停止抢救")
             synchronized(syncConnectionLost) {
                 // 是否启动了 自动抢救
                 if (!rescueEnable) {
@@ -602,7 +601,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         private fun startConnect(any: Any?) {
-            Timber.i("startConnect 111 ${isConnecting_Automatically}")
+            IMCLog.i("startConnect 111 ${isConnecting_Automatically}")
             synchronized(syncConnectionLost) {
                 if (isConnecting_Automatically) {
                     return
@@ -611,7 +610,7 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
             }
 //            reconnectBlocking()
             reconnect()
-            Timber.i("startConnect 222")
+            IMCLog.i("startConnect 222")
         }
 
         private fun autoReconnect(other: Pair<String, Any?>){
