@@ -14,7 +14,7 @@ class V2RealRecipient : V2IMCSocketListener {
 
     override fun onMessage(iEngine: IEngine, bytes: ByteBuffer): Boolean {
         imcListeners.forEach {
-            it.onMessage(bytes)
+            it.onMessage(bytes.array())
         }
         return super.onMessage(iEngine, bytes)
     }

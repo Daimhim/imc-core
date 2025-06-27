@@ -79,9 +79,9 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
 
         })
         engine.addIMCListener(object : V2IMCListener{
-            override fun onMessage(byteArray: ByteBuffer) {
+            override fun onMessage(byteArray: ByteArray) {
                 super.onMessage(byteArray)
-                mainAdapter.addItem(MainItem("Ta",1,"byteArray:${byteArray.array().size}"))
+                mainAdapter.addItem(MainItem("Ta",1,"byteArray:${byteArray.size}"))
             }
 
             override fun onMessage(text: String) {
