@@ -82,8 +82,8 @@ class MainViewModel : ViewModel() {
                         }.start()
                 }
 
-                override fun onMessage(byteArray: ByteBuffer) {
-                    Timber.i("onMessage:收到新消息11  ${byteArray.array().size} ${System.currentTimeMillis()}")
+                override fun onMessage(byteArray: ByteArray) {
+                    Timber.i("onMessage:收到新消息11  ${byteArray.size} ${System.currentTimeMillis()}")
                     viewModelScope
                         .launch {
 //                            val parseDelimitedFrom =
