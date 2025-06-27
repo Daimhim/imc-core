@@ -64,7 +64,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             IMCLog.i("onMessage bytes:${bytes.size}")
-            imcListenerManager.onMessage(getIEngine(), bytes.asByteBuffer())
+            imcListenerManager.onMessage(getIEngine(), bytes.toByteArray())
         }
     }
     var engineState = IEngineState.ENGINE_CLOSED // 当前连接状态
@@ -477,9 +477,9 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,text))
         }
 
-        override fun onMessage(iEngine: IEngine, bytes: ByteBuffer): Boolean {
+        override fun onMessage(iEngine: IEngine, bytes: ByteArray): Boolean {
 
-            return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,bytes.toByteString().toByteArray()))
+            return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,bytes))
         }
 
         private fun updateAuxiliaryHeartbeat(isHeartbeat:Boolean):Boolean {

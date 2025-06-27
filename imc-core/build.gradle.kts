@@ -4,8 +4,8 @@ plugins {
     id("maven-publish")
 }
 
-group = "org.daimhim.imc.core"
-version = "3.0.5.30-SNAPSHOT"
+group = "com.github.Daimhim"
+version = "1.1.8"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8

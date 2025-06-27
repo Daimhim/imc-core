@@ -131,7 +131,7 @@ class UDPEngine(
 
             })
             iEngine.addIMCListener(object : V2IMCListener{
-                override fun onMessage(byteArray: ByteBuffer) {
+                override fun onMessage(byteArray: ByteArray) {
                     update()
                 }
 

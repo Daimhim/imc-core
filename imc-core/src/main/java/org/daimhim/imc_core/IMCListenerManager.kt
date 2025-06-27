@@ -61,7 +61,7 @@ class IMCListenerManager  {
                 }
         }
     }
-    fun onMessage(iEngine: IEngine, bytes: ByteBuffer) {
+    fun onMessage(iEngine: IEngine, bytes: ByteArray) {
         synchronized(imcSocketListeners) {
             imcSocketListeners
                 .forEach { (t, u) ->

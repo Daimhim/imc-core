@@ -54,7 +54,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         override fun onMessage(bytes: ByteBuffer) {
             IMCLog.i("onMessage bytes ${bytes.limit()}")
             imcListenerManager
-                .onMessage(this@V2JavaWebEngine, bytes)
+                .onMessage(this@V2JavaWebEngine, bytes.array())
         }
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {

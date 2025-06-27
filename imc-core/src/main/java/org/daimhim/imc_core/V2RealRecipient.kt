@@ -1,6 +1,5 @@
 package org.daimhim.imc_core
 
-import java.nio.ByteBuffer
 
 class V2RealRecipient : V2IMCSocketListener {
     private val imcListeners = mutableListOf<V2IMCListener>()
@@ -12,9 +11,9 @@ class V2RealRecipient : V2IMCSocketListener {
         return super.onMessage(iEngine, text)
     }
 
-    override fun onMessage(iEngine: IEngine, bytes: ByteBuffer): Boolean {
+    override fun onMessage(iEngine: IEngine, bytes: ByteArray): Boolean {
         imcListeners.forEach {
-            it.onMessage(bytes.array())
+            it.onMessage(bytes)
         }
         return super.onMessage(iEngine, bytes)
     }
