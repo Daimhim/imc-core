@@ -5,6 +5,7 @@ import okhttp3.internal.checkDuration
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.net.SocketTimeoutException
+import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.*
 
@@ -63,7 +64,7 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             IMCLog.i("onMessage bytes:${bytes.size}")
-            imcListenerManager.onMessage(getIEngine(), bytes)
+            imcListenerManager.onMessage(getIEngine(), bytes.asByteBuffer())
         }
     }
     var engineState = IEngineState.ENGINE_CLOSED // 当前连接状态
@@ -476,8 +477,9 @@ class OkhttpIEngine(private val builder: Builder) : IEngine {
             return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,text))
         }
 
-        override fun onMessage(iEngine: IEngine, bytes: ByteArray): Boolean {
-            return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,bytes))
+        override fun onMessage(iEngine: IEngine, bytes: ByteBuffer): Boolean {
+
+            return updateAuxiliaryHeartbeat(customHeartbeat.isHeartbeat(iEngine,bytes.toByteString().toByteArray()))
         }
 
         private fun updateAuxiliaryHeartbeat(isHeartbeat:Boolean):Boolean {

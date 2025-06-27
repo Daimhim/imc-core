@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.daimhim.imc_core.*
 import timber.multiplatform.log.Timber
+import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
 class MainViewModel : ViewModel() {
@@ -81,8 +82,8 @@ class MainViewModel : ViewModel() {
                         }.start()
                 }
 
-                override fun onMessage(byteArray: ByteArray) {
-                    Timber.i("onMessage:收到新消息11  ${byteArray.size} ${System.currentTimeMillis()}")
+                override fun onMessage(byteArray: ByteBuffer) {
+                    Timber.i("onMessage:收到新消息11  ${byteArray.array().size} ${System.currentTimeMillis()}")
                     viewModelScope
                         .launch {
 //                            val parseDelimitedFrom =

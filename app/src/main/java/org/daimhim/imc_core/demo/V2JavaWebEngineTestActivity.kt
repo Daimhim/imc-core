@@ -9,6 +9,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.RecyclerView
 import org.daimhim.imc_core.*
 import timber.multiplatform.log.Timber
+import java.nio.ByteBuffer
 import java.util.concurrent.Callable
 
 class V2JavaWebEngineTestActivity : AppCompatActivity() {
@@ -78,9 +79,9 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
 
         })
         engine.addIMCListener(object : V2IMCListener{
-            override fun onMessage(byteArray: ByteArray) {
+            override fun onMessage(byteArray: ByteBuffer) {
                 super.onMessage(byteArray)
-                mainAdapter.addItem(MainItem("Ta",1,"byteArray:${byteArray.size}"))
+                mainAdapter.addItem(MainItem("Ta",1,"byteArray:${byteArray.array().size}"))
             }
 
             override fun onMessage(text: String) {
@@ -155,7 +156,7 @@ class V2JavaWebEngineTestActivity : AppCompatActivity() {
 
     private fun initView() {
         findViewById<EditText>(R.id.et_url)
-            .setText("https://aac1-117-22-144-244.ngrok-free.app")
+            .setText("https://client.jingyingbang.com/ws?name=202101041012028&token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOiIxMzMxNTU5OTA2NTk5Mzc0ODQ4Iiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiMTUwMTUxMTIwMDgiLCJsb2dpbiI6MTc1MDc0Nzc1NH0.RII9dykaeBST54tuy17cdHJBC3UtR8FfQgrtHowxL_Q-fr1K88rRHOzuvzKg1M866hq8cDBQGISkES7niZxKWKC9dHghN80KmR8x35UIzL1tWt0x5Ia6yhwiCkW26D61F9UN9cVuHxfIrLOJAJnsaSNfZBgm0m47-jdmyIvdKqU&platform=android")
         val findViewById = findViewById<RecyclerView>(R.id.rv_list)
         findViewById.adapter = mainAdapter
 

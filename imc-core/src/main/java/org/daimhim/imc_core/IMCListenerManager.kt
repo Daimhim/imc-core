@@ -1,6 +1,6 @@
 package org.daimhim.imc_core
 
-import okio.ByteString
+import java.nio.ByteBuffer
 import java.util.TreeMap
 
 /**
@@ -61,13 +61,13 @@ class IMCListenerManager  {
                 }
         }
     }
-    fun onMessage(iEngine: IEngine, bytes: ByteString) {
+    fun onMessage(iEngine: IEngine, bytes: ByteBuffer) {
         synchronized(imcSocketListeners) {
             imcSocketListeners
                 .forEach { (t, u) ->
                     u.forEach {
                         try {
-                            val onMessage = it.onMessage(iEngine, bytes.toByteArray())
+                            val onMessage = it.onMessage(iEngine, bytes)
                             if (onMessage) {
                                 return@synchronized
                             }

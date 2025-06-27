@@ -4,6 +4,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.URI
+import java.nio.ByteBuffer
 
 class UDPEngine(
     build:Builder
@@ -130,7 +131,7 @@ class UDPEngine(
 
             })
             iEngine.addIMCListener(object : V2IMCListener{
-                override fun onMessage(byteArray: ByteArray) {
+                override fun onMessage(byteArray: ByteBuffer) {
                     update()
                 }
 

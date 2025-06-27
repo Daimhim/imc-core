@@ -54,7 +54,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
         override fun onMessage(bytes: ByteBuffer) {
             IMCLog.i("onMessage bytes ${bytes.limit()}")
             imcListenerManager
-                .onMessage(this@V2JavaWebEngine, byteBufferToString(bytes))
+                .onMessage(this@V2JavaWebEngine, bytes)
         }
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {
@@ -79,12 +79,7 @@ class V2JavaWebEngine private constructor(private val builder: Builder) : IEngin
 
 
     }
-    // 新增转换方法
-    private fun byteBufferToString(byteBuffer: ByteBuffer): String {
-        val bytes = ByteArray(byteBuffer.remaining())
-        byteBuffer.get(bytes)
-        return String(bytes)
-    }
+
     override fun engineOn(key: String) {
         // 更换URL
         synchronized(syncJWE) {
