@@ -175,11 +175,15 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
             determineMaximumHeartbeat = false // 确定最大心跳间隔
         }
         println("IHeartbeat.心跳失败次数：${curHearFailure} determineMaximumHeartbeat ${determineMaximumHeartbeat}")
-        // 唤起重新链接，其内部会调用停止心跳
+        // 唤起重新链接,其内部会调用停止心跳
         if (isError){
             return
         }
-        webSocketClient?.resetStartAutoConnect()
+        // 心跳失败只「确保 autoConnect 在跑」(幂等),不清零退避状态。
+        // 之前用 resetStartAutoConnect 会让每次心跳 tick 把 reconnectDelay 重置回 init,
+        // 导致 4b 指数退避完全失效;退避现在统一由 onClose/onError 路径里的 autoConnect
+        // abnormalDisconnectionAndAutomaticReconnection 管理。
+        webSocketClient?.startAutoConnect()
     }
 
     class Builder{

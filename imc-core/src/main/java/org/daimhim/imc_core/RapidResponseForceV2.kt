@@ -3,6 +3,26 @@ package org.daimhim.imc_core
 import java.util.concurrent.*
 import kotlin.Comparator
 
+/**
+ * V2 已弃用,新代码请使用 [RapidResponseForceV4]。
+ *
+ * V2 的问题:
+ *  - static 共享 `operationTasksQueue` / `timeoutCallbackMap`,多实例会互相干扰
+ *  - 依赖 `ExecutorService` + `PriorityBlockingQueue`,资源开销大于必要
+ *  - 用 `groupId + Pair<...>` 表达任务身份,实际上是个 hack
+ *
+ * V4 的改进:
+ *  - 状态全部实例隔离,无 static 共享
+ *  - 单线程裸 wait/notify,无 ExecutorService
+ *  - 回调改为 per-task lambda
+ *
+ * 兼容性:V2 当前仅被已弃用的 [OkhttpIEngine] 内部使用,后续大版本会一起移除。
+ */
+@Deprecated(
+    message = "V2 实现依赖 static 共享状态,多实例会互相干扰,请使用 RapidResponseForceV4。",
+    replaceWith = ReplaceWith("RapidResponseForceV4"),
+    level = DeprecationLevel.WARNING
+)
 class RapidResponseForceV2(
     private val MAX_TIMEOUT_TIME: Long = 5 * 1000,
     private val groupId: String = makeOnlyId(),

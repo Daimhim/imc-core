@@ -36,6 +36,9 @@ dependencies {
     implementation("androidx.compose.runtime:runtime:1.0.0")
     implementation ("androidx.fragment:fragment-ktx:1.5.7")
     implementation ("androidx.activity:activity-ktx:1.7.2")
+    // ProcessLifecycleOwner: 进程级前后台监听, 替代手搓 FullLifecycleHandler
+    implementation ("androidx.lifecycle:lifecycle-process:2.6.1")
+    implementation ("androidx.lifecycle:lifecycle-common-java8:2.6.1")
     implementation(project(":imc-core"))
     implementation("com.github.Daimhim:SimpleAdapter:1.1.0")
     implementation("com.squareup.okhttp3:okhttp:4.9.0")

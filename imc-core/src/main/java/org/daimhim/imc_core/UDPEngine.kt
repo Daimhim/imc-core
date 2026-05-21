@@ -6,6 +6,11 @@ import java.net.InetAddress
 import java.net.URI
 import java.nio.ByteBuffer
 
+@Deprecated(
+    message = "UDPEngine 无生产场景验证,后续大版本会移除。如需 UDP 通信请自行实现 IEngine。",
+    level = DeprecationLevel.WARNING
+)
+@Suppress("DEPRECATION") // 内部沿用同样弃用的 UDPReceiveParser,跟主类一起标记后无需重复 warn
 class UDPEngine(
     build:Builder
 ) : IEngine {

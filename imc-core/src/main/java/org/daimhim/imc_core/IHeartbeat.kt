@@ -20,30 +20,30 @@ interface ITimeoutScheduler{
 
 class RRFTimeoutScheduler : ITimeoutScheduler{
 
-    private val rapidResponseForce = RapidResponseForceV2()
+    private val rapidResponseForce = RapidResponseForceV4()
     private val timingTag = "${RRFTimeoutScheduler::class.java.simpleName}_${hashCode()}"
     private var isStop = false
     private val sync = Any()
-    init {
-        rapidResponseForce.timeoutCallback(object :Comparable<Pair<String,Any?>>{
-            override fun compareTo(other: Pair<String, Any?>): Int {
-                IMCLog.i("timeoutCallback.compareTo $timingTag")
-                if (isStop) return 1
-                when(other.first){
-                    timingTag -> {
-                        // 执行回调
-                        call?.call()
-                    }
-                }
-                return 0
-            }
-        })
+    private val timeoutCallback = fun(id:String){
+        IMCLog.i("timeoutCallback.compareTo id $id")
+        if (id != timingTag) return
+        synchronized(sync){
+            if (isStop) return
+        }
+        call?.call()
     }
+
     override fun start(time: Long) {
-        println("IHeartbeat.RRFTimeoutScheduler.start isStop:$isStop $time")
+        IMCLog.i("RRFTimeoutScheduler.start isStop=$isStop time=${time}ms tag=$timingTag")
         synchronized(sync){
             isStop = false
-            rapidResponseForce.register(timingTag,null,time)
+            // 关键:必须把调用方传入的 time 透传给 RRFv4,否则 register 会用默认 MAX_TIMEOUT_TIME=5s
+            // 旧版漏传导致心跳/容差窗口实际都在 5s 触发,跟配置值无关
+            rapidResponseForce.register(
+                id = timingTag,
+                timeoutMs = time,
+                onTimeout = timeoutCallback,
+            )
         }
     }
 
@@ -52,7 +52,7 @@ class RRFTimeoutScheduler : ITimeoutScheduler{
         synchronized(sync){
             if (isStop) return
             isStop = true
-            rapidResponseForce.unRegister(timingTag)
+            rapidResponseForce.unregister(id = timingTag)
         }
     }
     private var call: Callable<Void>? = null

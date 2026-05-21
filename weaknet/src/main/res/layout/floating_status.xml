@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="220dp"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#DD000000"
+    android:padding="8dp">
+
+    <!-- 顶栏:标签 + 关 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="WeakNet"
+            android:textColor="#80FFFFFF"
+            android:textSize="10sp"/>
+
+        <TextView
+            android:id="@+id/bt_float_close"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:gravity="center"
+            android:text="✕"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:background="#33FFFFFF"/>
+    </LinearLayout>
+
+    <!-- 预设名 -->
+    <TextView
+        android:id="@+id/tv_float_preset"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="预设: (无)"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:textSize="13sp"
+        android:singleLine="true"
+        android:ellipsize="end"/>
+
+    <!-- chaos 参数 -->
+    <TextView
+        android:id="@+id/tv_float_params"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="(无 chaos)"
+        android:textColor="#FFCCCCCC"
+        android:textSize="10sp"
+        android:fontFamily="monospace"/>
+
+    <!-- VPN 状态 -->
+    <TextView
+        android:id="@+id/tv_float_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="○ VPN 未启动"
+        android:textColor="#FFAAAAAA"
+        android:textSize="10sp"
+        android:fontFamily="monospace"
+        android:singleLine="true"
+        android:ellipsize="end"/>
+
+    <!-- 启动/停止 按钮 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/bt_float_start"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="34dp"
+            android:layout_marginEnd="2dp"
+            android:padding="0dp"
+            android:minHeight="0dp"
+            android:text="▶ 启动"
+            android:textSize="11sp"/>
+
+        <Button
+            android:id="@+id/bt_float_stop"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="34dp"
+            android:layout_marginStart="2dp"
+            android:padding="0dp"
+            android:minHeight="0dp"
+            android:text="■ 停止"
+            android:textSize="11sp"/>
+    </LinearLayout>
+</LinearLayout>

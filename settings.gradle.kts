@@ -23,3 +23,4 @@ pluginManagement {
 rootProject.name = "imc-core"
 include(":app")
 include(":imc-core")
+include(":weaknet")

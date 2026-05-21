@@ -9,6 +9,13 @@ import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.*
 
+@Deprecated(
+    message = "OkHttp 实现已弃用,新代码请使用 V2JavaWebEngine。" +
+            "OkhttpIEngine 仅为兼容历史 SDK 调用方保留,后续大版本会移除。",
+    replaceWith = ReplaceWith("V2JavaWebEngine"),
+    level = DeprecationLevel.WARNING
+)
+@Suppress("DEPRECATION") // 内部沿用同样弃用的 IEngineActionListener / DefCustomHeartbeat / RapidResponseForceV2 等
 class OkhttpIEngine(private val builder: Builder) : IEngine {
 
     /**

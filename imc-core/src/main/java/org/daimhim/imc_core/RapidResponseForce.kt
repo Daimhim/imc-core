@@ -3,6 +3,12 @@ package org.daimhim.imc_core
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.PriorityBlockingQueue
 
+@Deprecated(
+    message = "V1 实现已弃用,仅为兼容已 deprecated 的 OkhttpIEngine 保留。" +
+            "新代码请使用 RapidResponseForceV4。",
+    replaceWith = ReplaceWith("RapidResponseForceV4"),
+    level = DeprecationLevel.WARNING
+)
 class RapidResponseForce<T : Any>(
     private val MAX_TIMEOUT_TIME: Long = 5 * 1000,
     private val groupId: String = makeOnlyId(),

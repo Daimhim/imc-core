@@ -1,7 +1,5 @@
 package org.daimhim.imc_core
 
-import okhttp3.internal.checkDuration
-import okio.ByteString.Companion.toByteString
 import org.java_websocket.WebSocket
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.drafts.Draft
@@ -19,6 +17,13 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.collections.ArrayList
 
+@Suppress("DEPRECATION") // 内部沿用同样弃用的 IEngineActionListener / RapidResponseForceV2 等
+@Deprecated(
+    message = "V1 实现已弃用,新代码请使用 V2JavaWebEngine。" +
+            "V1 与 V2 同一处的 currentKey 初始化 bug 未修,后续大版本会移除。",
+    replaceWith = ReplaceWith("V2JavaWebEngine"),
+    level = DeprecationLevel.WARNING
+)
 class JavaWebEngine(private val builder: Builder) : IEngine {
     companion object {
         val CONNECTION_UNEXPECTEDLY_CLOSED = -1 //： 连接意外关闭
@@ -103,7 +108,6 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
                     timeout = connectTimeout,
                     rescueEnable = builder.rescueEnable(),
                     heartbeatEnable = builder.heartbeatEnable(),
-                    nst = builder.nst(),
                     customHeartbeat = builder.customHeartbeat(),
                 )
             }
@@ -236,7 +240,6 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         timeout: Int = 0,
         private val rescueEnable: Boolean,
         private val heartbeatEnable: Boolean,
-        private val nst: NST? = null,
         private val customHeartbeat: CustomHeartbeat? = null,
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
 
@@ -738,7 +741,6 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         internal var debug = false
         internal var rescueEnable = true
         internal var heartbeatEnable = true
-        internal var nst: NST? = null
         internal var imcLogFactory: IIMCLogFactory? = null
         internal var customHeartbeat: CustomHeartbeat? = null
 
@@ -760,12 +762,12 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         fun heartbeatInterval(min: Long, max: Long, unit: TimeUnit) = apply {
-            minHeartbeatInterval = checkDuration("minHeartbeatInterval", min, unit)
-            maxHeartbeatInterval = checkDuration("maxHeartbeatInterval", max, unit)
+            minHeartbeatInterval = checkDurationMs("minHeartbeatInterval", min, unit)
+            maxHeartbeatInterval = checkDurationMs("maxHeartbeatInterval", max, unit)
         }
 
         fun maxReconnectDelay(delay: Long, unit: TimeUnit) = apply {
-            maxReconnectDelay = checkDuration("maxReconnectDelay", delay, unit)
+            maxReconnectDelay = checkDurationMs("maxReconnectDelay", delay, unit)
         }
 
         fun debug(debug: Boolean) = apply {
@@ -773,9 +775,6 @@ class JavaWebEngine(private val builder: Builder) : IEngine {
         }
 
         fun debug(): Boolean = debug
-
-        fun nst(nst: NST) = apply { this.nst = nst }
-        fun nst() = nst
 
         fun rescueEnable(rescueEnable: Boolean) = apply { this.rescueEnable = rescueEnable }
         fun rescueEnable() = rescueEnable

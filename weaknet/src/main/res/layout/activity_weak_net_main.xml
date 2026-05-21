@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="false">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+            <!-- ───── VPN 控制 ───── -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="弱网 VPN(QNET 模式)"
+                android:textStyle="bold"
+                android:textSize="16sp"/>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="目标 app:"
+                android:layout_marginTop="4dp"/>
+
+            <Button
+                android:id="@+id/bt_pick_app"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="全局(不限制 app)"
+                android:textAlignment="textStart"
+                android:gravity="start|center_vertical"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"/>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/bt_vpn_start"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="启动 VPN"/>
+
+                <Button
+                    android:id="@+id/bt_vpn_stop"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="停止 VPN"/>
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tv_vpn_state"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:padding="6dp"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:text="VPN: 未启动"/>
+
+            <Button
+                android:id="@+id/bt_toggle_float"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="开启悬浮窗"/>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginVertical="8dp"
+                android:background="#DDDDDD"/>
+
+            <!-- ───── Chaos 注入 ───── -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="弱网注入参数"
+                android:textStyle="bold"
+                android:textSize="16sp"/>
+
+            <TextView
+                android:id="@+id/tv_latency_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="基础延迟: 0 ms"/>
+            <SeekBar
+                android:id="@+id/sb_latency"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="3000"/>
+
+            <TextView
+                android:id="@+id/tv_jitter_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="抖动: 0 ms"/>
+            <SeekBar
+                android:id="@+id/sb_jitter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="2000"/>
+
+            <TextView
+                android:id="@+id/tv_drop_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="丢包率: 0 %"/>
+            <SeekBar
+                android:id="@+id/sb_drop"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"/>
+
+            <TextView
+                android:id="@+id/tv_bw_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="带宽限速: 不限"/>
+            <SeekBar
+                android:id="@+id/sb_bw"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"/>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <CheckBox
+                    android:id="@+id/cb_reject_new"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="拒绝新连接"/>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:text="断开阈值:"/>
+
+                <EditText
+                    android:id="@+id/et_disconnect_bytes"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:hint="字节"/>
+
+                <EditText
+                    android:id="@+id/et_disconnect_ms"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:hint="毫秒"/>
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/bt_apply_chaos"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="应用注入参数"/>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginVertical="8dp"
+                android:background="#DDDDDD"/>
+
+            <!-- ───── 配置预设 ───── -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="配置预设"
+                android:textStyle="bold"
+                android:textSize="16sp"/>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/et_preset_name"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:hint="预设名称"
+                    android:inputType="text"
+                    android:maxLines="1"/>
+
+                <Button
+                    android:id="@+id/bt_preset_save"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="保存"/>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Spinner
+                    android:id="@+id/sp_presets"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"/>
+
+                <Button
+                    android:id="@+id/bt_preset_load"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="加载"/>
+
+            <Button
+                android:id="@+id/bt_preset_delete"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="删除"/>
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginVertical="8dp"
+            android:background="#DDDDDD"/>
+
+        <!-- ───── 日志(随上面布局一起滚)───── -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="事件日志"
+                android:textStyle="bold"
+                android:textSize="14sp"/>
+
+            <Button
+                android:id="@+id/bt_log_fullscreen"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="32dp"
+                android:textSize="12sp"
+                android:text="全屏"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/ll_log_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#F5F5F5"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"/>
+    </LinearLayout>
+</ScrollView>

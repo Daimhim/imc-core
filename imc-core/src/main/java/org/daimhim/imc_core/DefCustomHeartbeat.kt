@@ -1,6 +1,12 @@
 package org.daimhim.imc_core
 
 
+@Deprecated(
+    message = "DefCustomHeartbeat 仅与已弃用的 OkhttpIEngine 配套使用。" +
+            "V2JavaWebEngine 使用 V2FixedHeartbeat / V2SmartHeartbeat。",
+    replaceWith = ReplaceWith("V2FixedHeartbeat"),
+    level = DeprecationLevel.WARNING
+)
 class DefCustomHeartbeat : CustomHeartbeat {
     override fun isHeartbeat(iEngine: IEngine, bytes: ByteArray): Boolean {
         IMCLog.i("isHeartbeat ByteString")

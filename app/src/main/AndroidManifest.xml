@@ -16,11 +16,21 @@
             android:theme="@style/Theme.Imccoredemo"
             tools:targetApi="31">
         <activity
-                android:name=".V2JavaWebEngineTestActivity"
+                android:name=".NetSurveillanceTestActivity"
+                android:exported="true"/>
+        <activity
+                android:name=".StressReconnectTestActivity"
+                android:exported="true"
+                android:label="重连压测"/>
+        <activity
+                android:name=".FullLogActivity"
+                android:exported="false"
+                android:label="完整事件日志"/>
+        <activity
+                android:name=".QgbWsTestActivity"
                 android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
-
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
