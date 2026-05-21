@@ -28,11 +28,14 @@ adb -s $DEVICE shell am start -n org.daimhim.imc_core.weaknet/.WeakNetMainActivi
 echo "  weaknet 启动,等 4s VPN 就绪..."
 sleep 4
 
-# 启动 :app + 自动连
-TOKEN="eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOiIxMTk5MjQ0MzIxMjU0MTUwMTQ0Iiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiMTUwMTUxMTIwMDgiLCJsb2dpbiI6MTc3ODY1NTc1MX0.BQdjONVuZhSgMZrimHyplcqO8NYXlGYO-KUA-rjn9EvPRdAQGlIn95L2ukarAC5TOUnxYFImaF7u_YtEtoWaUGqTBNohUmJiCdY5B9xRlWoE23EcXKB6PSXIXIcWvZzG9oFBv9-jz1SbnxMtPK0H4jiHuK4U4B9N71BAD-SAjmA"
+# 启动 :app + 自动连。需要 export TOKEN 和 NAME 环境变量(JWT 与业务账号)。
+if [ -z "$TOKEN" ] || [ -z "$NAME" ]; then
+    echo "请先 export TOKEN=<JWT> NAME=<业务账号>"
+    exit 1
+fi
 adb -s $DEVICE shell am start -n org.daimhim.imc_core.demo/.QgbWsTestActivity \
     --es token "$TOKEN" \
-    --es name "202012221018295" \
+    --es name "$NAME" \
     --es state "0" \
     --ez autoConnect true > /dev/null
 echo "  :app 启动并触发自动连,运行 ${DURATION}s..."

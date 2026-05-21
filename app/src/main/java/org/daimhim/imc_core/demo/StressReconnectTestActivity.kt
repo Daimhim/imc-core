@@ -30,7 +30,7 @@ class StressReconnectTestActivity : AppCompatActivity() {
 
     companion object {
         private const val URL_TEMPLATE =
-            "wss://client.qgbtech.cn/ws:90?token=%s&name=%s&platform=android&state=1"
+            "wss://<your-server>/ws?token=%s&name=%s&platform=android&state=1"
         // 每次循环 onOpen 最长等多久,超了算 fail
         private const val CONNECT_TIMEOUT_MS = 30_000L
         // 每 N 次打一次内存快照
@@ -320,7 +320,6 @@ class StressReconnectTestActivity : AppCompatActivity() {
     )
 }
 
-// 跟 QgbWsTestActivity 同步的占位 token / name,免得反复粘贴
-private const val DEFAULT_TOKEN =
-    "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOiIxMTk5MjQ0MzIxMjU0MTUwMTQ0Iiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiMTUwMTUxMTIwMDgiLCJsb2dpbiI6MTc3ODY1NTc1MX0.BQdjONVuZhSgMZrimHyplcqO8NYXlGYO-KUA-rjn9EvPRdAQGlIn95L2ukarAC5TOUnxYFImaF7u_YtEtoWaUGqTBNohUmJiCdY5B9xRlWoE23EcXKB6PSXIXIcWvZzG9oFBv9-jz1SbnxMtPK0H4jiHuK4U4B9N71BAD-SAjmA"
-private const val DEFAULT_NAME = "202012221018295"
+// 默认 token / name 不写源码,运行时从 Intent extras 或 EditText 输入
+private const val DEFAULT_TOKEN = ""
+private const val DEFAULT_NAME = ""

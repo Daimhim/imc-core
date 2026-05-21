@@ -30,11 +30,11 @@ import org.daimhim.imc_core.V2JavaWebEngine
 import org.daimhim.imc_core.V2SmartHeartbeat
 
 /**
- * QGB 测试环境 WebSocket 演示
+ * WebSocket 演示
  *
- * - URL 模板: wss://client.qgbtech.cn/ws:90?token=%s&name=%s&platform=android&state=%s
- * - token: 从 sgb-management-android 登录日志里抓出后粘贴
- * - name: ImAccount (服务端返的账号 ID, 不是手机号)
+ * - URL 模板: wss://<your-server>/ws?token=%s&name=%s&platform=android&state=%s
+ * - token: 由调用方提供
+ * - name: 业务账号 ID
  * - state: 0 = 首次连接, 1 = 重连/重试 (本 demo 在每次成功 connect 后自动切到 1)
  * - 接入 NetSurveillance, 让 ProgressiveAutoConnect 按 NetReport.recommend 智能退避
  */
@@ -45,16 +45,15 @@ class QgbWsTestActivity : AppCompatActivity() {
         private const val SMART_HEARTBEAT = 1
 
         private const val URL_TEMPLATE =
-            "wss://client.qgbtech.cn/ws:90?token=%s&name=%s&platform=android&state=%s"
+            "wss://<your-server>/ws?token=%s&name=%s&platform=android&state=%s"
 
-        // 目标主机用来配 NetSurveillance 探测点 (端口走默认 443, URL 里的 :90 是路径里写的)
-        private const val PROBE_HOST = "client.qgbtech.cn"
+        // 目标主机用来配 NetSurveillance 探测点
+        private const val PROBE_HOST = "<your-server>"
         private const val PROBE_PORT = 443
 
-        // 默认填充用,省得每次手输 — Intent extras 优先,这两个只在 EditText 为空时兜底
-        private const val DEFAULT_TOKEN =
-            "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOiIxMTk5MjQ0MzIxMjU0MTUwMTQ0Iiwic2NvcGUiOiJkZWZhdWx0IiwiaXNzIjoiMTUwMTUxMTIwMDgiLCJsb2dpbiI6MTc3ODY1NTc1MX0.BQdjONVuZhSgMZrimHyplcqO8NYXlGYO-KUA-rjn9EvPRdAQGlIn95L2ukarAC5TOUnxYFImaF7u_YtEtoWaUGqTBNohUmJiCdY5B9xRlWoE23EcXKB6PSXIXIcWvZzG9oFBv9-jz1SbnxMtPK0H4jiHuK4U4B9N71BAD-SAjmA"
-        private const val DEFAULT_NAME = "202012221018295"
+        // 不提供默认 token / account,统一从 Intent extras 或 EditText 取
+        private const val DEFAULT_TOKEN = ""
+        private const val DEFAULT_NAME = ""
     }
 
     private lateinit var engine: V2JavaWebEngine

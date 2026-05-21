@@ -13,7 +13,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="QGB Test Env (wss://client.qgbtech.cn/ws:90)"
+            android:text="WS Test Env"
             android:textStyle="bold"
             android:textSize="16sp" />
 
@@ -32,7 +32,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="Token (paste from sgb-management-android log)" />
+            android:text="Token (paste JWT)" />
 
         <EditText
             android:id="@+id/et_token"
