@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.github.Daimhim"
-version = "1.1.11"
+version = "1.1.12"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
