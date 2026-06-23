@@ -1,6 +1,5 @@
 package org.daimhim.imc_core
 
-import java.nio.ByteBuffer
 import java.util.TreeMap
 
 /**
@@ -44,39 +43,38 @@ class IMCListenerManager  {
         }
     }
 
+    /**
+     * 派发前先 snapshot 列表,避免在持锁状态下回调用户代码。
+     *
+     * 原因:
+     *  - 用户实现 onMessage 里可能做同步 IO / 数据库 / UI 等长操作,持锁回调会把整个派发链卡住;
+     *  - 用户实现里跨线程触发 add/remove 会请求同一把锁,产生死锁风险;
+     *  - TreeMap 已按 key(level)有序,snapshot 后 flatMap 仍保持优先级顺序。
+     */
     fun onMessage(iEngine: IEngine, text: String) {
-        synchronized(imcSocketListeners) {
-            imcSocketListeners
-                .forEach { (t, u) ->
-                    u.forEach {
-                        try {
-                            val onMessage = it.onMessage(iEngine, text)
-                            if (onMessage) {
-                                return@synchronized
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    }
-                }
+        val snapshot = snapshotListeners()
+        for (listener in snapshot) {
+            try {
+                if (listener.onMessage(iEngine, text)) return
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
     fun onMessage(iEngine: IEngine, bytes: ByteArray) {
-        synchronized(imcSocketListeners) {
-            imcSocketListeners
-                .forEach { (t, u) ->
-                    u.forEach {
-                        try {
-                            val onMessage = it.onMessage(iEngine, bytes)
-                            if (onMessage) {
-                                return@synchronized
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    }
-                }
+        val snapshot = snapshotListeners()
+        for (listener in snapshot) {
+            try {
+                if (listener.onMessage(iEngine, bytes)) return
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
+    }
+
+    private fun snapshotListeners(): List<V2IMCSocketListener> = synchronized(imcSocketListeners) {
+        // TreeMap.values 按 level 升序 — flatMap 后顺序与原派发顺序一致
+        imcSocketListeners.values.flatMap { it.toList() }
     }
 
     fun addIMCListener(v2IMCListener: V2IMCListener){

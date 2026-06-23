@@ -2,8 +2,8 @@ package org.daimhim.imc_core.demo
 
 import android.content.SharedPreferences
 import android.util.Base64
+import android.util.Log
 import org.daimhim.imc_core.CachedMessage
-import org.daimhim.imc_core.IMCLog
 import org.daimhim.imc_core.IMessageCache
 import org.daimhim.imc_core.decodeMessageCacheBlob
 import org.daimhim.imc_core.encodeMessageCacheBlob
@@ -41,6 +41,7 @@ class SharedPrefsMessageCache @JvmOverloads constructor(
     companion object {
         const val DEFAULT_KEY = "imc_core_send_cache"
         const val DEFAULT_MAX_BYTES = 32 * 1024
+        private const val TAG = "SpMsgCache"
     }
 
     private val lock = Any()
@@ -57,21 +58,21 @@ class SharedPrefsMessageCache @JvmOverloads constructor(
             val bytes = Base64.decode(raw, Base64.NO_WRAP)
             val decoded = decodeMessageCacheBlob(bytes)
             if (decoded == null) {
-                IMCLog.i("SharedPrefsMessageCache blob 解析失败, 清空 key=$key")
+                Log.i(TAG,"SharedPrefsMessageCache blob 解析失败, 清空 key=$key")
                 sp.edit().remove(key).apply()
                 return
             }
             // owner 隔离:当前 owner 非空且跟 SP 里的不一致 → 旧账号残留,直接清掉
             if (owner != null && decoded.owner != owner) {
-                IMCLog.i("SharedPrefsMessageCache owner 不匹配 stored='${decoded.owner}' current='$owner', 清空 key=$key")
+                Log.i(TAG,"SharedPrefsMessageCache owner 不匹配 stored='${decoded.owner}' current='$owner', 清空 key=$key")
                 sp.edit().remove(key).apply()
                 return
             }
             queue.addAll(decoded.messages)
             occupied = queue.sumOf { it.sizeBytes }
-            IMCLog.i("SharedPrefsMessageCache 加载 ${queue.size} 条 ${occupied}B")
+            Log.i(TAG,"SharedPrefsMessageCache 加载 ${queue.size} 条 ${occupied}B")
         } catch (e: Exception) {
-            IMCLog.e(e, "SharedPrefsMessageCache base64 解码失败, 清空 key=$key")
+            Log.e(TAG, "SharedPrefsMessageCache base64 解码失败, 清空 key=$key", e)
             sp.edit().remove(key).apply()
             queue.clear(); occupied = 0
         }
@@ -86,7 +87,7 @@ class SharedPrefsMessageCache @JvmOverloads constructor(
             val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
             sp.edit().putString(key, encoded).apply()
         } catch (e: Exception) {
-            IMCLog.e(e, "SharedPrefsMessageCache 写入失败 key=$key")
+            Log.e(TAG, "SharedPrefsMessageCache 写入失败 key=$key", e)
         }
     }
 

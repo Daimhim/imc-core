@@ -30,8 +30,8 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
     /** 心跳超时容差倍数,>= 1.0;1.0 = 无容差,与改造前等价 */
     private val toleranceFactor: Double = builder.toleranceFactor
 
-    /** 是否已停止心跳调度(false = 计时器活动中) */
-    private var isStopHeartbeat = false
+    /** 心跳调度是否在跑(true = 计时器活动中) */
+    private var isRunning = false
 
     /** 自上次 reset 起是否收到过任何返包(pong / message 都算) */
     private var hasPongBeenReceived = false
@@ -65,25 +65,51 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
         this.webSocketClient = webSocketClient
     }
 
-    override fun getConnectionLostTimeout(): Int {
-        synchronized(sync) { return curHeartbeat.toInt() }
-    }
+    /**
+     * 返回给 Java-WebSocket 内部 LCD 的超时值。**固定 0 = 关掉 LCD**。
+     *
+     * 原因:实测中大量活连接被库自带 LCD 机制误杀(等不到 WS-level PONG 即触发 1006 关闭)。LCD 只看
+     * **WS-level PONG 控制帧**,而 V2Fixed 走 [customHeartbeat] 路径时根本不发 WS-level PING,
+     * Server A 也极少主动发 PONG → LCD 等不到 PONG 就杀活连接。
+     *
+     * V2Fixed 自管心跳(用 [curHeartbeat] 调度),所以 LCD 这层冗余反而有害,关掉。
+     */
+    override fun getConnectionLostTimeout(): Int = 0
 
-    override fun setConnectionLostTimeout(connectionLostTimeout: Int) {
-        synchronized(sync) { curHeartbeat = connectionLostTimeout.toLong() }
-    }
+    /**
+     * 上层(Java-WebSocket 库)如果调进来,无视 — 不让 [curHeartbeat] 被库改成 0 把
+     * 本类自己的调度也搞挂。本类心跳间隔通过 [Builder.setCurHeartbeat] / [onChangeMode] 设置。
+     */
+    override fun setConnectionLostTimeout(connectionLostTimeout: Int) { /* intentionally no-op */ }
+
+    override fun isIncomingHeartbeat(text: String): Boolean =
+        customHeartbeat?.isHeartbeat(text) == true
+
+    override fun isIncomingHeartbeat(bytes: ByteArray): Boolean =
+        customHeartbeat?.isHeartbeat(bytes) == true
 
     override fun updateLastPong() {
+        val recoveredInTolerance: Boolean
         synchronized(sync) {
             hasPongBeenReceived = true
+            recoveredInTolerance = isInToleranceWindow
+        }
+        ImcEvents.emit(ImcEvent.HeartbeatPongReceived(IMPL_NAME))
+        if (recoveredInTolerance) {
+            ImcEvents.emit(
+                ImcEvent.HeartbeatDegraded(
+                    implName = IMPL_NAME,
+                    stage = ImcEvent.HeartbeatDegraded.Stage.RECOVERED_IN_TOLERANCE,
+                    expectedIntervalSeconds = curHeartbeat,
+                )
+            )
         }
     }
 
     override fun startConnectionLostTimer() {
-        IMCLog.i("IHeartbeat.startConnectionLostTimer")
         synchronized(sync) {
-            if (isStopHeartbeat) return
-            isStopHeartbeat = true
+            if (isRunning) return
+            isRunning = true
             hasPongBeenReceived = false
             isInToleranceWindow = false
             timeoutScheduler.start(curHeartbeat * 1000)
@@ -92,8 +118,8 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
 
     override fun stopConnectionLostTimer(isError: Boolean) {
         synchronized(sync) {
-            if (!isStopHeartbeat) return
-            isStopHeartbeat = false
+            if (!isRunning) return
+            isRunning = false
             hasPongBeenReceived = false
             isInToleranceWindow = false
             timeoutScheduler.stop()
@@ -101,20 +127,36 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
     }
 
     override fun sendHeartbeat() {
-        IMCLog.i("IHeartbeat.V2FixedHeartbeat ${webSocketClient == null}")
+        // A13: WS 未连时静默早退。否则 webSocketClient.send/sendPing 会抛
+        // WebsocketNotConnectedException → RRF onTimeout catch 上报为 INTERNAL noise。
+        // 触发场景:onError/onClose 触达 stopConnectionLostTimer 之前的窗口里 RRF 恰好 fire。
+        val ws = webSocketClient ?: return
+        if (!ws.isOpen) return
+        ImcEvents.emit(ImcEvent.HeartbeatSent(IMPL_NAME, intervalSeconds = curHeartbeat))
         if (customHeartbeat == null) {
-            webSocketClient?.sendPing()
+            ws.sendPing()
             return
         }
         if (customHeartbeat?.byteOrString() == true) {
-            webSocketClient?.send(customHeartbeat?.byteHeartbeat())
+            ws.send(customHeartbeat?.byteHeartbeat())
         } else {
-            webSocketClient?.send(customHeartbeat?.stringHeartbeat())
+            ws.send(customHeartbeat?.stringHeartbeat())
         }
     }
 
     /** 计时器一次触发 — 走 2 阶段判定 */
     private fun onTimerTick() {
+        // A13: WS 已断时不再续期 timer,避免 RRF 持续被无意义 reschedule。
+        // 上层 stopConnectionLostTimer 会在毫秒级跟进,这里只是兜底。
+        val ws = webSocketClient
+        if (ws == null || !ws.isOpen) {
+            synchronized(sync) {
+                isRunning = false
+                hasPongBeenReceived = false
+                isInToleranceWindow = false
+            }
+            return
+        }
         val action: Action = synchronized(sync) {
             when {
                 hasPongBeenReceived -> Action.RESET_AND_CONTINUE
@@ -136,21 +178,33 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
                     .toLong()
                     .coerceAtLeast(1_000L)
                 synchronized(sync) { isInToleranceWindow = true }
-                IMCLog.i("IHeartbeat 进入容差窗口 +${toleranceMs}ms (factor=$toleranceFactor)")
+                ImcEvents.emit(
+                    ImcEvent.HeartbeatDegraded(
+                        implName = IMPL_NAME,
+                        stage = ImcEvent.HeartbeatDegraded.Stage.ENTERED_TOLERANCE,
+                        expectedIntervalSeconds = curHeartbeat,
+                    )
+                )
                 sendHeartbeat()  // 主动探活
                 timeoutScheduler.start(toleranceMs)
             }
             Action.FAIL -> {
-                IMCLog.i("IHeartbeat 容差窗口超时,触发重连")
-                // 心跳失败只「确保 autoConnect 在跑」(幂等),不清零退避状态。
-                // 之前 resetStartAutoConnect 会把 reconnectDelay 重置回 init,
-                // 导致每次心跳 tick 都把退避状态打回起点,4b 指数退避失效。
-                webSocketClient?.startAutoConnect()
+                ImcEvents.emit(ImcEvent.HeartbeatFailed(IMPL_NAME, consecutive = 1))
+                // 必须强 close 才能真正触发重连:容差窗口超时不代表 TCP 断,socket 通常仍 isOpen=true,
+                // 调 startAutoConnect 会被 ProgressiveAutoConnect 的 isOpen 早返回挡掉,变成软告警(看到日志
+                // "触发重连"但没有 [AUTOCONNECT scheduled] —— 实测线上跑 11h 见过两次)。
+                // close() 走 onClose / onError → abnormalDisconnectionAndAutomaticReconnection →
+                // autoConnect 自然接管,退避状态由 autoConnect 自己维护,不会被打回起点。
+                webSocketClient?.close()
             }
         }
     }
 
     private enum class Action { RESET_AND_CONTINUE, ENTER_TOLERANCE, FAIL }
+
+    private companion object {
+        const val IMPL_NAME = "V2Fixed"
+    }
 
     class Builder {
         /** 心跳间隔(秒),可动态变更 */

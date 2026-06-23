@@ -79,8 +79,12 @@ enum class NetTransport(val rawValue: Int) {
  *
  * 系统主动推过来的网络事实,不含主动探测结果。订阅 [NetStateMonitor] 会
  * 在每次有意义的状态变化时收到新的快照
+ *
+ * **equals/hashCode 不包含 [timestamp]**:声明层判重要看"事实是否变化",而每次回调
+ * timestamp 必然不同;如果按 data class 默认实现,会出现"能力位完全一样但快照不等"
+ * 的虚假抖动,L3 会被 L1 反复唤醒做无用功。
  */
-data class NetSnapshot(
+class NetSnapshot(
     val verdict: NetVerdict,
     val capabilities: Set<NetCap>,
     val transports: Set<NetTransport>,
@@ -90,6 +94,46 @@ data class NetSnapshot(
     val signalStrengthDbm: Int?,
     val timestamp: Long
 ) {
+    /** 复制并替换字段,保留 data class 风格的便利 */
+    fun copy(
+        verdict: NetVerdict = this.verdict,
+        capabilities: Set<NetCap> = this.capabilities,
+        transports: Set<NetTransport> = this.transports,
+        linkUpKbps: Int = this.linkUpKbps,
+        linkDownKbps: Int = this.linkDownKbps,
+        signalStrengthDbm: Int? = this.signalStrengthDbm,
+        timestamp: Long = this.timestamp,
+    ): NetSnapshot = NetSnapshot(
+        verdict, capabilities, transports,
+        linkUpKbps, linkDownKbps, signalStrengthDbm, timestamp
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is NetSnapshot) return false
+        return verdict == other.verdict &&
+            capabilities == other.capabilities &&
+            transports == other.transports &&
+            linkUpKbps == other.linkUpKbps &&
+            linkDownKbps == other.linkDownKbps &&
+            signalStrengthDbm == other.signalStrengthDbm
+        // 故意忽略 timestamp
+    }
+
+    override fun hashCode(): Int {
+        var r = verdict.hashCode()
+        r = 31 * r + capabilities.hashCode()
+        r = 31 * r + transports.hashCode()
+        r = 31 * r + linkUpKbps
+        r = 31 * r + linkDownKbps
+        r = 31 * r + (signalStrengthDbm ?: 0)
+        return r
+    }
+
+    override fun toString(): String = "NetSnapshot(verdict=$verdict, caps=$capabilities, " +
+        "transports=$transports, up=$linkUpKbps, down=$linkDownKbps, " +
+        "sig=$signalStrengthDbm, ts=$timestamp)"
+
     companion object {
         val OFFLINE = NetSnapshot(
             verdict = NetVerdict.OFFLINE,

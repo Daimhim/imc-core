@@ -2,11 +2,13 @@ package org.daimhim.imc_core.demo
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import org.daimhim.imc_core.IEngine
-import org.daimhim.imc_core.IMCLog
+import org.daimhim.imc_core.NetProbeProfile
+import org.daimhim.imc_core.NetSurveillance
 
 /**
  * 把 [IEngine] 的心跳模式跟 App 进程的前后台状态绑起来,带**非对称防抖**:
@@ -35,11 +37,18 @@ import org.daimhim.imc_core.IMCLog
  * @param backgroundDelayMs 进入后台后的防抖延迟。默认 30s,跟 WhatsApp / Signal / 微信下限对齐。
  *                          短暂离开(<30s)的场景不会触发 BG 切换
  */
+/**
+ * 可选地把 [surveillance] 也绑上 —— 前台用 [foregroundProfile],进后台后切到 [backgroundProfile]。
+ * 留空表示不调 surveillance,业务自己决定是否切探测档。
+ */
 class EngineForegroundBinder @JvmOverloads constructor(
     private val engine: IEngine,
     private val foregroundMode: Int,
     private val backgroundMode: Int,
     private val backgroundDelayMs: Long = DEFAULT_BACKGROUND_DELAY_MS,
+    private val surveillance: NetSurveillance? = null,
+    private val foregroundProfile: NetProbeProfile = NetProbeProfile.BALANCED,
+    private val backgroundProfile: NetProbeProfile = NetProbeProfile.BACKGROUND,
 ) {
 
     companion object {
@@ -48,21 +57,33 @@ class EngineForegroundBinder @JvmOverloads constructor(
 
         /** Telegram / 微信宽容档,适合高频短暂离开的场景 */
         const val TOLERANT_BACKGROUND_DELAY_MS = 60_000L
+
+        private const val TAG = "EngineFgBinder"
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /** 当前实际生效的心跳 mode key,-1 表示还没切过(attach 前) */
+    @Volatile var currentMode: Int = -1
+        private set
+
     private val applyBackgroundModeTask = Runnable {
-        IMCLog.i("EngineForegroundBinder: ${backgroundDelayMs}ms 防抖到期, 切到 backgroundMode($backgroundMode)")
+        Log.i(TAG,"EngineForegroundBinder: ${backgroundDelayMs}ms 防抖到期, 切到 backgroundMode($backgroundMode)")
         engine.onChangeMode(backgroundMode)
+        currentMode = backgroundMode
+        // 顺便把 surveillance 切到后台档:降低探测频率 + 关 burst,节电
+        surveillance?.setProfile(backgroundProfile)
     }
 
     private val observer = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) {
             // 进前台: 取消可能 pending 的 BG 切换, 立即切 FG
             mainHandler.removeCallbacks(applyBackgroundModeTask)
-            IMCLog.i("EngineForegroundBinder: → foregroundMode($foregroundMode)")
+            Log.i(TAG,"EngineForegroundBinder: → foregroundMode($foregroundMode)")
             engine.onChangeMode(foregroundMode)
+            currentMode = foregroundMode
+            // 立即恢复前台 surveillance 档
+            surveillance?.setProfile(foregroundProfile)
             // 1.5s 内快速识别"挂起期间是否被系统/对端关掉了":
             //  - onChangeMode 已经立即发了一次心跳(看 V2JavaWebEngine.onChangeMode 路径)
             //  - 这里再调 makeConnection() 让 ProgressiveAutoConnect 立即拉起重连(若已断)
@@ -70,14 +91,14 @@ class EngineForegroundBinder @JvmOverloads constructor(
             try {
                 engine.makeConnection()
             } catch (e: Exception) {
-                IMCLog.e(e, "EngineForegroundBinder.onStart makeConnection 异常")
+                Log.e(TAG, "EngineForegroundBinder.onStart makeConnection 异常", e)
             }
         }
 
         override fun onStop(owner: LifecycleOwner) {
             // 进后台: 不立即切, 排个防抖任务
             mainHandler.removeCallbacks(applyBackgroundModeTask)
-            IMCLog.i("EngineForegroundBinder: 进后台, 排 ${backgroundDelayMs}ms 防抖任务")
+            Log.i(TAG,"EngineForegroundBinder: 进后台, 排 ${backgroundDelayMs}ms 防抖任务")
             mainHandler.postDelayed(applyBackgroundModeTask, backgroundDelayMs)
         }
     }

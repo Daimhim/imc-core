@@ -21,6 +21,7 @@ class ProgressiveAutoConnectSurveillanceTest {
         override fun stop() {}
         override fun current(): NetReport = report
         override fun forceProbe(callback: (NetReport) -> Unit) { callback(report) }
+        override fun currentProfile(): NetProbeProfile = NetProbeProfile.BALANCED
         override fun register(listener: NetReportListener) { listeners.add(listener) }
         override fun unregister(listener: NetReportListener) { listeners.remove(listener) }
         fun push(next: NetReport) {

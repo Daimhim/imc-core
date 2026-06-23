@@ -6,7 +6,7 @@ import java.util.concurrent.TimeUnit
  * 把 [duration]+[unit] 转成毫秒整数并做合法性校验
  *
  * 等价于 OkHttp 的 `okhttp3.internal.checkDuration`,自带在这里是为了让
- * `ProgressiveAutoConnect` / `JavaWebEngine` 等不本质依赖 OkHttp 的组件
+ * `ProgressiveAutoConnect` 等不本质依赖 OkHttp 的组件
  * 不再被 OkHttp 的内部 API 绑架。
  *
  * 校验项:

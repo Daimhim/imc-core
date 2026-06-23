@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="8dp">
+
+        <!-- 实时状态条 -->
+        <TextView
+            android:id="@+id/tv_now_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="8dp"
+            android:background="#F0F0F0"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:text="(loading)" />
+
+        <!-- 工具条 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp">
+
+            <Button
+                android:id="@+id/bt_clear"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="清空" />
+
+            <Button
+                android:id="@+id/bt_jump_now"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="● 跟随中" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="0dp" />
+
+            <Button
+                android:id="@+id/bt_toggle_legend"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="收起说明 ▲" />
+        </LinearLayout>
+
+        <!-- 波浪图 -->
+        <HorizontalScrollView
+            android:id="@+id/scroll_wave"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="#FAFAFA"
+            android:scrollbars="horizontal">
+
+            <org.daimhim.imc_core.demo.NetWaveView
+                android:id="@+id/wave"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+        </HorizontalScrollView>
+
+        <!-- 选中详情 -->
+        <TextView
+            android:id="@+id/tv_detail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:padding="6dp"
+            android:background="#F8F8F8"
+            android:fontFamily="monospace"
+            android:textSize="11sp"
+            android:textColor="#666666"
+            android:text="↑ 点击波浪查看历史时刻详情" />
+
+        <!-- 图例 & 说明:默认展开,可收起 -->
+        <TextView
+            android:id="@+id/tv_legend"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:padding="10dp"
+            android:background="#F5F5F5"
+            android:textSize="11sp"
+            android:textColor="#333333"
+            android:lineSpacingExtra="3dp"
+            android:text="(legend)" />
+    </LinearLayout>
+</ScrollView>

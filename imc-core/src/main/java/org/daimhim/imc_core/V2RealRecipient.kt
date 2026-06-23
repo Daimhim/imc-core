@@ -1,8 +1,12 @@
 package org.daimhim.imc_core
 
+import java.util.concurrent.CopyOnWriteArrayList
 
-class V2RealRecipient : V2IMCSocketListener {
-    private val imcListeners = mutableListOf<V2IMCListener>()
+
+internal class V2RealRecipient : V2IMCSocketListener {
+    // CopyOnWriteArrayList:IO 线程 forEach 派发,业务线程 add/remove,
+    // 不能用普通 mutableListOf —— 会抛 ConcurrentModificationException。
+    private val imcListeners = CopyOnWriteArrayList<V2IMCListener>()
 
     override fun onMessage(iEngine: IEngine, text: String):Boolean {
         imcListeners.forEach {

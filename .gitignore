@@ -15,3 +15,5 @@
 .cxx
 local.properties
 /repo
+/.local-logs
+/test-records

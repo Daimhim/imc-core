@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.github.Daimhim"
-version = "1.1.10"
+version = "1.1.11"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
@@ -21,12 +21,29 @@ dependencies {
     testImplementation("org.java-websocket:Java-WebSocket:1.5.4")
     // slf4j-simple 让 java-websocket 的内部日志不抛 NOP warning
     testImplementation("org.slf4j:slf4j-simple:1.7.36")
+    // QgbLoginJvm 用,JDK 无内置 JSON
+    testImplementation("org.json:json:20231013")
 }
 
 // 把 -Dqgb.url=... 从 Gradle JVM 转发到 fork 出的 test JVM,
-// 让 QgbE2eConnectionTest 拿得到 URL
+// 让 QgbE2eConnectionTest / QgbHeartBeatProbeTest 拿得到 URL/参数
+// 优先 -D 系统属性,其次回落到环境变量 QGB_URL / QGB_PROBE_SECONDS / QGB_PROBE_PAYLOAD
+// (Windows PowerShell 在带 `&` 的 URL 上对 -D 解析很难搞,环境变量 path 更稳)
 tasks.withType<Test> {
-    System.getProperty("qgb.url")?.let { systemProperty("qgb.url", it) }
+    mapOf(
+        "qgb.url" to "QGB_URL",
+        "qgb.probe.seconds" to "QGB_PROBE_SECONDS",
+        "qgb.probe.payload" to "QGB_PROBE_PAYLOAD",
+        "qgb.username" to "QGB_USERNAME",
+        "qgb.password" to "QGB_PASSWORD",
+    ).forEach { (sys, env) ->
+        val v = System.getProperty(sys) ?: System.getenv(env)
+        if (!v.isNullOrBlank()) systemProperty(sys, v)
+    }
+    testLogging {
+        showStandardStreams = true
+        events("started", "passed", "failed")
+    }
 }
 
 afterEvaluate{

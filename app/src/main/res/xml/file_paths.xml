@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- FileLogger 写到 getExternalFilesDir(null)/imclog,对应 external-files-path 根 -->
+    <external-files-path name="imclog" path="imclog/" />
+</paths>

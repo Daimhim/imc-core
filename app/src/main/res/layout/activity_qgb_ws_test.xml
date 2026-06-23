@@ -13,7 +13,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="WS Test Env"
+            android:text="QGB Test Env (wss://your-im-server.example.com/ws)"
             android:textStyle="bold"
             android:textSize="16sp" />
 
@@ -28,6 +28,13 @@
             android:background="#F0F0F0"
             android:text="(URL preview)" />
 
+        <Button
+            android:id="@+id/bt_login"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="登录获取参数 (用户名/密码)" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -38,7 +45,7 @@
             android:id="@+id/et_token"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="JWT token"
+            android:hint="JWT token (粘贴完整 wss:// URL 自动拆分)"
             android:inputType="textNoSuggestions"
             android:maxLines="3" />
 
@@ -161,6 +168,23 @@
             android:background="#F5F5F5"
             android:text="(idle)" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="心跳"
+            android:textStyle="bold"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:id="@+id/tv_heartbeat"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="6dp"
+            android:fontFamily="monospace"
+            android:textSize="11sp"
+            android:background="#F5F5F5"
+            android:text="(idle)" />
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
@@ -200,5 +224,40 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
             android:text="进入重连压测" />
+
+        <Button
+            android:id="@+id/bt_toggle_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="悬浮窗(关)" />
+
+        <Button
+            android:id="@+id/bt_wave_chart"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="WS / 网络 波浪图" />
+
+        <Button
+            android:id="@+id/bt_hb_test"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="心跳测试: 正常" />
+
+        <Button
+            android:id="@+id/bt_scenario"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="场景模拟…" />
+
+        <Button
+            android:id="@+id/bt_inbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="消息接收列表" />
     </LinearLayout>
 </ScrollView>

@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.SystemClock
 import org.daimhim.container.ContextHelper
 import org.daimhim.imc_core.ITimeoutScheduler
@@ -40,11 +41,22 @@ class AutoConnectAlarmTimeoutScheduler(private val name:String) : ITimeoutSchedu
                 .getApplication()
                 .getSystemService(Context.ALARM_SERVICE) as AlarmManager
             AlarmTimeoutBroadcastReceiver.setCall(call,name)
-            alarmManager.setExact(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
+            // setExact 在 Doze 下会被推迟到 maintenance window(深 Doze 可数小时一次),
+            // 导致熄屏静止几小时后 WS 断了也不重连。setExactAndAllowWhileIdle 在 Doze 下仍允许
+            // 触发(每 app 约 9 分钟限一次,对重连退避足够)。API 22 没 Doze,走 setExact。
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
         }
     }
 

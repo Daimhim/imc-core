@@ -14,16 +14,23 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * 覆盖 [V2JavaWebEngine.WebSocketClientImpl.onClose] 的分支:
  *
- *  ┌────────────────────────┬─────────────────────────────┐
- *  │ 触发条件                │ 预期回调                      │
- *  ├────────────────────────┼─────────────────────────────┤
- *  │ 本地主动 close()        │ listener.onClose            │
- *  │ 远端 NORMAL (1000)     │ listener.onClose            │
- *  │ 远端 GOING_AWAY (1001) │ listener.onClose            │
- *  │ 远端 PROTOCOL_ERROR    │ listener.onError            │
- *  │ 远端 ABNORMAL (1006)   │ listener.onError            │
- *  │ 本地超时等 remote=false │ listener.onError            │
- *  └────────────────────────┴─────────────────────────────┘
+ *  ┌──────────────────────────────┬─────────────────────────────┐
+ *  │ 触发条件                      │ 预期回调                      │
+ *  ├──────────────────────────────┼─────────────────────────────┤
+ *  │ engineOff (closeAndTerminate) │ listener.onClose            │
+ *  │ close() 后 onClose remote=false│ listener.onError (走 autoConnect)│
+ *  │ 远端 NORMAL (1000)           │ listener.onClose            │
+ *  │ 远端 GOING_AWAY (1001)       │ listener.onClose            │
+ *  │ 远端 PROTOCOL_ERROR          │ listener.onError            │
+ *  │ 远端 ABNORMAL (1006)         │ listener.onError            │
+ *  │ 本地超时等 remote=false       │ listener.onError            │
+ *  └──────────────────────────────┴─────────────────────────────┘
+ *
+ * 注:close() 和 closeAndTerminate() 现在语义不同:
+ *  - close() 是软关闭(握手 watchdog / 心跳判死 / URL 切换),不设 isClosed,
+ *    后续 onClose remote=false 会走 onError 路径触发 autoConnect 抢救;
+ *  - closeAndTerminate() 是 engineOff 终止意图,设 isClosed=true 阻断抢救,
+ *    后续 onClose remote=false 走 listener.onClose,不再触发 autoConnect。
  *
  * 不真实连接,直接对一个未连接的 WebSocketClientImpl 实例调 onClose() 校验分发
  */
@@ -49,15 +56,36 @@ class V2JavaWebEngineImplTest {
     }
 
     @Test
-    fun onClose_local_proactive_close_dispatches_onClose() {
+    fun onClose_after_closeAndTerminate_dispatches_onClose() {
         val client = newClient()
         val (listener, events) = listenerCapture()
         client.javaWebSocketListener = listener
 
-        client.close()  // 本地主动: 内部置 isClosed = true
+        client.closeAndTerminate()  // engineOff 终止: 置 isClosed = true
         client.onClose(CloseFrame.NORMAL, "user closed", false)
 
         assertEquals(listOf("onClose(${CloseFrame.NORMAL},remote=false)"), events)
+    }
+
+    /**
+     * 与上面相对:普通 close()(握手 watchdog / 心跳判死 / URL 切换)不置 isClosed,
+     * 后续 onClose remote=false 必须走 onError 让 autoConnect 接管 —— 否则会出现
+     * "握手 watchdog fire → 引擎卡死在 Reconnecting" 的 P0 bug。
+     */
+    @Test
+    fun onClose_after_soft_close_dispatches_onError_to_trigger_autoConnect() {
+        val client = newClient()
+        val (listener, events) = listenerCapture()
+        client.javaWebSocketListener = listener
+
+        client.close()  // 软 close: 不置 isClosed,等抢救
+        client.onClose(CloseFrame.NORMAL, "watchdog fired", false)
+
+        assertEquals(1, events.size)
+        assertTrue(
+            "软 close 后 onClose remote=false 必须走 onError 触发抢救, 实际: ${events.first()}",
+            events.first().startsWith("onError")
+        )
     }
 
     @Test
@@ -140,7 +168,7 @@ class V2JavaWebEngineImplTest {
         client.onClose(CloseFrame.NORMAL, null, true)
         client.onClose(CloseFrame.PROTOCOL_ERROR, null, true)
         client.onClose(CloseFrame.NORMAL, null, false)
-        client.close()
+        client.closeAndTerminate()
         client.onClose(CloseFrame.NORMAL, null, false)
     }
 

@@ -23,7 +23,13 @@ sealed class CachedMessage {
         val text: String,
         override val timestampMs: Long = System.currentTimeMillis(),
     ) : CachedMessage() {
-        override val sizeBytes: Int get() = text.toByteArray(Charsets.UTF_8).size
+        // 缓存 / 容量校验路径会反复读 sizeBytes,UTF-8 编码每次重新分配 byte[] 开销可观,
+        // 改成 lazy 只算一次。data class 的 equals/hashCode 只看主构造器参数,override 属性不参与,
+        // 所以延迟初始化不影响数据类语义。
+        @delegate:Transient
+        override val sizeBytes: Int by lazy(LazyThreadSafetyMode.PUBLICATION) {
+            text.toByteArray(Charsets.UTF_8).size
+        }
     }
 
     class Binary(
@@ -108,17 +114,22 @@ class InMemoryMessageCache @JvmOverloads constructor(
         if (maxAgeMs > 0) RapidResponseForceV4() else null
 
     private val onTtlExpire: (String) -> Unit = { id ->
+        var evictedId: String? = null
         synchronized(lock) {
             val idx = queue.indexOfFirst { it.id == id }
             if (idx >= 0) {
                 val m = queue.removeAt(idx)
                 occupied -= m.sizeBytes
-                IMCLog.i("InMemoryMessageCache TTL 淘汰 id=$id freed=${m.sizeBytes}B 剩=${occupied}B")
+                evictedId = id
             }
         }
+        // 锁外 emit:RRFv4 回调本就在 worker 线程,不会再串到 cacheSync 上
+        evictedId?.let { ImcEvents.emit(ImcEvent.MessageEvicted(it, ImcEvent.EvictReason.TTL_EXPIRED)) }
     }
 
     override fun put(message: CachedMessage) {
+        // 锁内淘汰,锁外 emit;evictedIds 一次性收集
+        val evictedIds = ArrayList<String>(0)
         synchronized(lock) {
             var newOccupied = occupied + message.sizeBytes
             // 字节超限 → FIFO 从头淘汰
@@ -126,11 +137,13 @@ class InMemoryMessageCache @JvmOverloads constructor(
                 val evicted = queue.removeFirst()
                 newOccupied -= evicted.sizeBytes
                 ttl?.unregister(evicted.id)
+                evictedIds.add(evicted.id)
             }
             queue.addLast(message)
             occupied = newOccupied
             if (maxAgeMs > 0) ttl?.register(message.id, maxAgeMs, onTtlExpire)
         }
+        for (id in evictedIds) ImcEvents.emit(ImcEvent.MessageEvicted(id, ImcEvent.EvictReason.OVER_CAPACITY))
     }
 
     override fun pollFirst(): CachedMessage? = synchronized(lock) {
@@ -141,11 +154,20 @@ class InMemoryMessageCache @JvmOverloads constructor(
     }
 
     override fun pushFirst(message: CachedMessage) {
+        val evictedIds = ArrayList<String>(0)
         synchronized(lock) {
+            var newOccupied = occupied + message.sizeBytes
+            while (newOccupied > maxBytes && queue.isNotEmpty()) {
+                val evicted = queue.removeLast()
+                newOccupied -= evicted.sizeBytes
+                ttl?.unregister(evicted.id)
+                evictedIds.add(evicted.id)
+            }
             queue.addFirst(message)
-            occupied += message.sizeBytes
+            occupied = newOccupied
             if (maxAgeMs > 0) ttl?.register(message.id, maxAgeMs, onTtlExpire)
         }
+        for (id in evictedIds) ImcEvents.emit(ImcEvent.MessageEvicted(id, ImcEvent.EvictReason.OVER_CAPACITY))
     }
 
     override fun remove(id: String): Boolean = synchronized(lock) {
@@ -160,11 +182,16 @@ class InMemoryMessageCache @JvmOverloads constructor(
     override fun isEmpty(): Boolean = synchronized(lock) { queue.isEmpty() }
 
     override fun clear() {
+        val clearedIds = ArrayList<String>()
         synchronized(lock) {
-            queue.forEach { ttl?.unregister(it.id) }
+            queue.forEach {
+                ttl?.unregister(it.id)
+                clearedIds.add(it.id)
+            }
             queue.clear()
             occupied = 0
         }
+        for (id in clearedIds) ImcEvents.emit(ImcEvent.MessageEvicted(id, ImcEvent.EvictReason.EXPLICIT_CLEAR))
     }
 
     override fun size(): Int = synchronized(lock) { queue.size }
@@ -218,18 +245,15 @@ class FileMessageCache @JvmOverloads constructor(
             DataInputStream(file.inputStream().buffered()).use { dis ->
                 val magic = dis.readInt()
                 if (magic != MAGIC) {
-                    IMCLog.i("FileMessageCache magic 不匹配, 重置: $file")
                     file.delete(); return
                 }
                 val version = dis.readByte()
                 if (version != VERSION) {
-                    IMCLog.i("FileMessageCache version $version 不支持, 重置: $file")
                     file.delete(); return
                 }
                 val storedOwner = dis.readUTF()
                 // owner 隔离:当前 owner 非空且跟文件里的不一致 → 旧账号残留,直接清掉
                 if (owner != null && storedOwner != owner) {
-                    IMCLog.i("FileMessageCache owner 不匹配 stored='$storedOwner' current='$owner', 重置: $file")
                     file.delete(); return
                 }
                 val count = dis.readInt()
@@ -238,9 +262,12 @@ class FileMessageCache @JvmOverloads constructor(
                 }
                 occupied = queue.sumOf { it.sizeBytes }
             }
-            IMCLog.i("FileMessageCache 加载 ${queue.size} 条 ${occupied}B from $file")
         } catch (e: Exception) {
-            IMCLog.e(e, "FileMessageCache 加载失败, 重置: $file")
+            ImcEvents.emit(ImcEvent.InternalError(
+                site = "FileMessageCache.loadFromFile",
+                errorClass = e.javaClass.simpleName,
+                message = "${e.message} (file=$file)",
+            ))
             try { file.delete() } catch (_: Exception) {}
             queue.clear(); occupied = 0
         }
@@ -264,7 +291,11 @@ class FileMessageCache @JvmOverloads constructor(
                 tmp.renameTo(file)
             }
         } catch (e: Exception) {
-            IMCLog.e(e, "FileMessageCache 写盘失败: $file")
+            ImcEvents.emit(ImcEvent.InternalError(
+                site = "FileMessageCache.flushToFile",
+                errorClass = e.javaClass.simpleName,
+                message = "${e.message} (file=$file)",
+            ))
         }
     }
 
@@ -290,8 +321,14 @@ class FileMessageCache @JvmOverloads constructor(
 
     override fun pushFirst(message: CachedMessage) {
         synchronized(lock) {
+            var newOccupied = occupied + message.sizeBytes
+            // 同 InMemoryMessageCache:外部直接调可能越界,从队尾淘汰,保留"插队最先发"语义。
+            while (newOccupied > maxBytes && queue.isNotEmpty()) {
+                val evicted = queue.removeLast()
+                newOccupied -= evicted.sizeBytes
+            }
             queue.addFirst(message)
-            occupied += message.sizeBytes
+            occupied = newOccupied
             flushToFile()
         }
     }
@@ -393,7 +430,11 @@ fun decodeMessageCacheBlob(bytes: ByteArray): DecodedMessageBlob? {
             DecodedMessageBlob(owner, out)
         }
     } catch (e: Exception) {
-        IMCLog.e(e, "decodeMessageCacheBlob 失败")
+        ImcEvents.emit(ImcEvent.InternalError(
+            site = "decodeMessageCacheBlob",
+            errorClass = e.javaClass.simpleName,
+            message = e.message,
+        ))
         null
     }
 }

@@ -10,6 +10,7 @@ import androidx.appcompat.app.AppCompatActivity
 import org.daimhim.imc_core.BurstProbeReport
 import org.daimhim.imc_core.DefaultNetProber
 import org.daimhim.imc_core.DefaultNetSurveillance
+import org.daimhim.imc_core.NetProbeProfile
 import org.daimhim.imc_core.NetReport
 import org.daimhim.imc_core.NetSnapshot
 import org.daimhim.imc_core.NetSurveillance
@@ -54,13 +55,12 @@ class NetSurveillanceTestActivity : AppCompatActivity() {
             .monitor(AndroidNetStateMonitor(applicationContext))
             .prober(DefaultNetProber())
             .probeTarget(target)
-            .debounceMs(500L)
-            .minProbeIntervalMs(10_000L)
-            // burst 默认关,checkbox 控制 setBurstEnabled 运行时开关
-            .enableBurst(intervalMs = BURST_INTERVAL_MS, attempts = 5, perAttemptTimeoutMs = 2_000)
+            // BALANCED 档:500ms debounce + 10s minProbeInterval,burst 默认关。
+            // 想换 burst 间隔走 profile copy,不再有独立的 enableBurst 配置点。
+            .profile(
+                NetProbeProfile.BALANCED.copy(burstIntervalMs = BURST_INTERVAL_MS)
+            )
             .build()
-        // 起步关掉,用户勾 checkbox 才开
-        surveillance.setBurstEnabled(false)
 
         surveillance.register { reportListener(it) }
         surveillance.start()

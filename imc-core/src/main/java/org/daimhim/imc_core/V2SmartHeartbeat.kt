@@ -42,9 +42,9 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
     private val sync = Any()
 
     /**
-     * 是否停止了心跳
+     * 心跳调度是否在跑(true = 计时器活动中)
      */
-    private var isStopHeartbeat = false
+    private var isRunning = false
     /**
      * 是否收到了心跳
      */
@@ -65,16 +65,35 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
     private var determineMaximumHeartbeat  = false
     private var webSocketClient : V2JavaWebEngine.WebSocketClientImpl? = null
 
+    /**
+     * 反 NAT idle 自适应。
+     * 记录最近 3 次连接活的时长(从 startConnectionLostTimer → stopConnectionLostTimer(true) 的间隔)。
+     * 如果这些时长接近(±20%),说明对面有一个固定的 idle timeout 反复掐线,SDK 应当把心跳间隔
+     * 调小到比这个 timeout 一半还短,绕过 NAT 反复 RST。
+     *
+     * 安全阈值:
+     *  - 时长必须 >= [NAT_DETECT_MIN_LIFETIME_SECONDS](20s),太短的不算 idle pattern
+     *  - 调整后的心跳不能低于 [NAT_DETECT_MIN_HEARTBEAT_SECONDS](10s),否则心跳本身耗电
+     *  - 自适应只触发一次降级,不会反复缩
+     */
+    private val recentLifetimes = ArrayDeque<Long>(3)
+    @Volatile private var sessionStartMs: Long = 0L
+    @Volatile private var natIdleAdaptedThisSession = false
+
     override fun sendHeartbeat(){
-        IMCLog.i("sendHeartbeat V2SmartHeartbeat")
+        // A13: WS 未连时静默早退,避免 WebsocketNotConnectedException 上报 INTERNAL noise。
+        // 见 V2FixedHeartbeat.sendHeartbeat 同款注释。
+        val ws = webSocketClient ?: return
+        if (!ws.isOpen) return
+        ImcEvents.emit(ImcEvent.HeartbeatSent(IMPL_NAME, intervalSeconds = curHeartbeat))
         if (customHeartbeat == null){
-            webSocketClient?.sendPing()
+            ws.sendPing()
             return
         }
         if (customHeartbeat?.byteOrString() == true) {
-            webSocketClient?.send(customHeartbeat?.byteHeartbeat())
+            ws.send(customHeartbeat?.byteHeartbeat())
         } else {
-            webSocketClient?.send(customHeartbeat?.stringHeartbeat())
+            ws.send(customHeartbeat?.stringHeartbeat())
         }
     }
     private val timeoutCall = object : Callable<Void> {
@@ -103,32 +122,71 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
         }
     }
 
+    override fun isIncomingHeartbeat(text: String): Boolean =
+        customHeartbeat?.isHeartbeat(text) == true
+
+    override fun isIncomingHeartbeat(bytes: ByteArray): Boolean =
+        customHeartbeat?.isHeartbeat(bytes) == true
+
     override fun updateLastPong() {
         synchronized(sync) {
             hasPongBeenReceived = true
         }
+        ImcEvents.emit(ImcEvent.HeartbeatPongReceived(IMPL_NAME))
     }
 
     override fun startConnectionLostTimer() {
-        IMCLog.i("IHeartbeat.startConnectionLostTimer isStopHeartbeat:$isStopHeartbeat $curHeartbeat")
         synchronized(sync){
-            if (isStopHeartbeat) return
-            isStopHeartbeat = true
+            if (isRunning) return
+            isRunning = true
             hasPongBeenReceived = false
+            sessionStartMs = System.currentTimeMillis()
             timeoutScheduler.start(curHeartbeat * 1000)
         }
     }
 
     override fun stopConnectionLostTimer(isError:Boolean) {
-        IMCLog.i("IHeartbeat.stopConnectionLostTimer isError:${isError} isStopHeartbeat:$isStopHeartbeat")
+        // A3: 记录本次连接生命周期,供 NAT idle 自适应检测使用
+        val lifetimeSec = if (sessionStartMs > 0L && isError) {
+            (System.currentTimeMillis() - sessionStartMs) / 1000L
+        } else 0L
         synchronized(sync){
-            if (!isStopHeartbeat) return
-            isStopHeartbeat = false
+            if (!isRunning) return
+            isRunning = false
             hasPongBeenReceived = false
             timeoutScheduler.stop()
             if (isError){
                 onHeartbeatFailure(true)
             }
+        }
+        if (lifetimeSec >= NAT_DETECT_MIN_LIFETIME_SECONDS) {
+            maybeAdaptToNatIdle(lifetimeSec)
+        }
+    }
+
+    /**
+     * A3: 看最近 3 次连接生命周期是否接近,接近(±20%)且没自适应过 → 把心跳间隔降到 lifetime / 2。
+     */
+    private fun maybeAdaptToNatIdle(lifetimeSec: Long) {
+        val newInterval = synchronized(sync) {
+            if (natIdleAdaptedThisSession) return@synchronized -1L
+            while (recentLifetimes.size >= 3) recentLifetimes.removeFirst()
+            recentLifetimes.addLast(lifetimeSec)
+            if (recentLifetimes.size < 3) return@synchronized -1L
+            val min = recentLifetimes.min()
+            val max = recentLifetimes.max()
+            val avg = recentLifetimes.average()
+            val within20Pct = (max - min).toDouble() / avg.coerceAtLeast(1.0) <= 0.2
+            if (!within20Pct) return@synchronized -1L
+            val candidate = (avg / 2).toLong().coerceAtLeast(NAT_DETECT_MIN_HEARTBEAT_SECONDS)
+            if (candidate >= curHeartbeat) return@synchronized -1L  // 不会"调高"
+            natIdleAdaptedThisSession = true
+            curHeartbeat = candidate
+            candidate
+        }
+        if (newInterval > 0) {
+            ImcEvents.emit(ImcEvent.HeartbeatSent(IMPL_NAME, intervalSeconds = newInterval))
+            // 没有专门的 NatIdleAdapted 事件,先复用 HeartbeatSent 触达 sink;后续需要可加专属事件。
         }
     }
 
@@ -136,7 +194,6 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
      * 心跳失败回调
      */
     private fun onHeartbeatFailure(isError:Boolean = false){
-        IMCLog.i("IHeartbeat.心跳回调 timeoutScheduler isError${isError} hasPongBeenReceived:$hasPongBeenReceived isStartDetect:$isStartDetect curHearSuccess:$curHearSuccess curHearFailure:$curHearFailure")
         // 心跳成功
         if (hasPongBeenReceived && webSocketClient?.isOpen == true){
             if (!isStartDetect){ //未稳定
@@ -156,7 +213,6 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
             }
             hasPongBeenReceived = false // 重置心跳成功
             sendHeartbeat() // 发送心跳
-            IMCLog.i("IHeartbeat.心跳回调 timeoutScheduler start $determineMaximumHeartbeat")
             timeoutScheduler.start(curHeartbeat * 1000) // 开始下一次心跳计时
             return
         }
@@ -174,16 +230,27 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
             // 心跳失败次数小于5次
             determineMaximumHeartbeat = false // 确定最大心跳间隔
         }
-        println("IHeartbeat.心跳失败次数：${curHearFailure} determineMaximumHeartbeat ${determineMaximumHeartbeat}")
+        ImcEvents.emit(ImcEvent.HeartbeatFailed(IMPL_NAME, consecutive = curHearFailure))
         // 唤起重新链接,其内部会调用停止心跳
         if (isError){
             return
         }
-        // 心跳失败只「确保 autoConnect 在跑」(幂等),不清零退避状态。
-        // 之前用 resetStartAutoConnect 会让每次心跳 tick 把 reconnectDelay 重置回 init,
-        // 导致 4b 指数退避完全失效;退避现在统一由 onClose/onError 路径里的 autoConnect
-        // abnormalDisconnectionAndAutomaticReconnection 管理。
-        webSocketClient?.startAutoConnect()
+        // 必须强 close 才能真正触发重连:容差窗口超时不代表 TCP 断,socket 通常仍 isOpen=true,
+        // 调 startAutoConnect 会被 ProgressiveAutoConnect 的 isOpen 早返回挡掉,变成软告警(看到日志
+        // "触发重连"但没有 [AUTOCONNECT scheduled])。
+        // close() 走 onClose / onError → abnormalDisconnectionAndAutomaticReconnection → autoConnect
+        // 自然接管,退避状态由 autoConnect 自己维护,不会被打回起点。
+        webSocketClient?.close()
+    }
+
+    private companion object {
+        const val IMPL_NAME = "V2Smart"
+
+        /** 连接生命周期 >= 此值才视为可能的 NAT idle pattern,过短的不算 */
+        const val NAT_DETECT_MIN_LIFETIME_SECONDS = 20L
+
+        /** 自适应后的心跳最小间隔,避免无脑往小调 */
+        const val NAT_DETECT_MIN_HEARTBEAT_SECONDS = 10L
     }
 
     class Builder{

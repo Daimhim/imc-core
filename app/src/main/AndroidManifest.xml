@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <application
             android:allowBackup="true"
             android:dataExtractionRules="@xml/data_extraction_rules"
@@ -27,6 +28,18 @@
                 android:exported="false"
                 android:label="完整事件日志"/>
         <activity
+                android:name=".MessageInboxActivity"
+                android:exported="false"
+                android:label="消息接收列表"/>
+        <activity
+                android:name=".NetWaveActivity"
+                android:exported="false"
+                android:label="WS / 网络 波浪图"/>
+        <activity
+                android:name=".QgbLoginActivity"
+                android:exported="false"
+                android:label="登录获取 WS 参数"/>
+        <activity
                 android:name=".QgbWsTestActivity"
                 android:exported="true">
             <intent-filter>
@@ -34,6 +47,16 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <receiver
             android:name=".AutoConnectAlarmTimeoutScheduler$AlarmTimeoutBroadcastReceiver"
             android:enabled="true"

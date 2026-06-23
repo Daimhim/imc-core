@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.SystemClock
 import org.daimhim.container.ContextHelper
 import org.daimhim.imc_core.ITimeoutScheduler
@@ -39,11 +40,21 @@ class HeartbeatAlarmTimeoutScheduler(private val name:String) : ITimeoutSchedule
             val alarmManager = ContextHelper
                 .getApplication()
                 .getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            alarmManager.setExact(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
+            // 同 AutoConnect:Doze 下 setExact 被推迟到 maintenance window,心跳停摆 → 连接被对端
+            // 静默回收。setExactAndAllowWhileIdle 在 Doze 下仍触发(每 app ~9 分钟限一次)。
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
             AlarmTimeoutBroadcastReceiver.setCall(call,name)
         }
     }

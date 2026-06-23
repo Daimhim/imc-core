@@ -8,7 +8,14 @@ import java.util.concurrent.CopyOnWriteArrayList
  * `ProgressiveAutoConnect` 等组件应读取这个枚举决定退避时长或是否切换接入点
  */
 enum class ReconnectAction {
-    /** 立即重试,无延迟 */
+    /**
+     * 立即重试。
+     *
+     * **注意**:这只是"决策层"信号,真正的调度延迟由 [IAutoConnect] 实现决定。
+     * 默认 [ProgressiveAutoConnect] 把 IMMEDIATE 映射成 1s 最小延迟
+     * ([ProgressiveAutoConnect.IMMEDIATE_DELAY_MS]),原因是 AlarmManager
+     * 在部分 ROM 上对短延时(<1s) 会被批处理吞掉。
+     */
     IMMEDIATE,
 
     /** 常规指数退避 */
@@ -61,14 +68,38 @@ interface NetSurveillance {
     /** 当前最新报告 */
     fun current(): NetReport
 
-    /** 强制立即探测一次 (绕过限流),回调里给最新报告;无 prober 时直接回当前报告 */
+    /**
+     * 强制立即探测一次 (绕过限流),回调里给最新报告;无 prober 时直接回当前报告。
+     *
+     * **副作用**:本次探测的 `lastProbeAt` 会被更新,因此随后 `minProbeIntervalMs` 内
+     * 触发的自动 `scheduleProbe(immediate=false)` 仍会被限流跳过。换句话说 forceProbe
+     * 会消费一次限流配额,而不是单纯"插队"。
+     */
     fun forceProbe(callback: (NetReport) -> Unit)
 
     /**
-     * 运行时切换 burst 周期探测开关。
-     *  - 仅在 Builder 配置了 burst 参数后生效(默认实现里 burstIntervalMs 等已设)
-     *  - 用于 UI 上让用户随时开/关高耗时探测
-     *  - 默认实现为 no-op,自定义实现可不支持
+     * 当前生效的探测档位。
+     */
+    fun currentProfile(): NetProbeProfile
+
+    /**
+     * 运行时切换探测档位。所有 baseline / burst 参数立即按新 profile 生效。
+     *
+     * 切换语义:
+     *  - 频率参数(`debounceMs` / `minProbeIntervalMs` / `probeTimeoutMs` / `burstAttempts` /
+     *    `burstPerAttemptTimeoutMs`):下次 scheduleProbe / 下次 burst 自动用新值
+     *  - `burstEnabled` 翻转:开 → 立即跑一次 + 排周期;关 → 取消已排定时器 + cancelBurst 中断进行中
+     *  - `burstIntervalMs` 变化:重排下一次 burst,本次跑完按新间隔
+     *
+     * 默认实现 no-op(实现可不支持档位切换)。
+     */
+    fun setProfile(profile: NetProbeProfile) {}
+
+    /**
+     * 运行时单独切换 burst 开关,等价于 `setProfile(currentProfile().copy(burstEnabled = enabled))`。
+     *
+     * 保留独立 API 是因为前台/后台切换里 burst 开关是最常调的旋钮,业务调一行更顺手。
+     * 默认实现 no-op,自定义实现可不支持。
      */
     fun setBurstEnabled(enabled: Boolean) {}
 
@@ -80,8 +111,7 @@ interface NetSurveillance {
  * 默认编排层实现
  *
  * - 监听声明层变化,按规则决定何时主动探测
- * - 限流:两次自动探测之间至少间隔 `minProbeIntervalMs` (默认 10s)
- * - 防抖:声明层抖动时,等稳定 `debounceMs` (默认 500ms) 再探测
+ * - 探测频率 / burst 行为由 [NetProbeProfile] 控制,可运行时 [setProfile] 切换档位
  * - 若未提供 [NetProber] / [ProbeTarget],则退化为纯声明层 (lastProbe 永远为 null)
  *
  * 使用:
@@ -90,8 +120,13 @@ interface NetSurveillance {
  *     .monitor(AndroidNetStateMonitor(context))
  *     .prober(DefaultNetProber())                // 可选
  *     .probeTarget(ProbeTarget("api.example.com", 443, true))   // 可选
+ *     .profile(NetProbeProfile.BALANCED)         // 默认就是 BALANCED,可省
  *     .build()
  * surveillance.start()
+ *
+ * // 业务前台/后台切换时:
+ * surveillance.setProfile(NetProbeProfile.AGGRESSIVE)
+ * surveillance.setProfile(NetProbeProfile.BACKGROUND)
  * ```
  */
 class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveillance {
@@ -100,15 +135,13 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         ?: error("NetStateMonitor is required")
     private val prober: NetProber? = builder.prober
     private val probeTarget: ProbeTarget? = builder.probeTarget
-    private val minProbeIntervalMs: Long = builder.minProbeIntervalMs
-    private val debounceMs: Long = builder.debounceMs
 
-    /** burst 探测配置(默认关闭) */
+    /**
+     * 当前 profile —— 探测频率 / burst 参数的单一来源。
+     * 所有 scheduleProbe / scheduleBurst / probe 都读这个字段,@Volatile 保证跨线程可见。
+     */
     @Volatile
-    private var burstEnabled: Boolean = builder.burstEnabled
-    private val burstIntervalMs: Long = builder.burstIntervalMs
-    private val burstAttempts: Int = builder.burstAttempts
-    private val burstPerAttemptTimeoutMs: Int = builder.burstPerAttemptTimeoutMs
+    private var currentProfile: NetProbeProfile = builder.profile
 
     private val listeners = CopyOnWriteArrayList<NetReportListener>()
     private val timer = RapidResponseForceV4()
@@ -149,13 +182,25 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
             if (started) return
             started = true
         }
-        monitor.register(monitorListener)
+        ImcEvents.emit(ImcEvent.SurveillanceStarted())
+        // 顺序很关键:
+        //  1) monitor.start() —— 让平台层先订阅 NetworkCallback / NetCheckDetect 等。
+        //     在此之前 monitor.current() 必然是 OFFLINE 初始值,直接 applySnapshot 会
+        //     给 listener 推一个虚假的"刚启动就离线"报告。
+        //  2) register listener —— 错过 start 那一瞬的事件 OK,系统首次 onCapabilitiesChanged 会补。
+        //  3) applySnapshot 只在 monitor.current() 已经有真实数据时才推一次。OFFLINE 初始值就跳过,
+        //     等 monitor 的 onCapabilitiesChanged 自然触发。
         monitor.start()
-        applySnapshot(monitor.current())
+        monitor.register(monitorListener)
+        val initial = monitor.current()
+        if (initial != NetSnapshot.OFFLINE || initial.timestamp > 0L) {
+            // monitor.current() 已被回调更新过(非初始 OFFLINE),信任它
+            applySnapshot(initial)
+        }
         // baseline 探测:非立即,走防抖,系统首次推 capabilities 后再探
         scheduleProbe(immediate = false)
-        // burst 探测:配置开启时,第一次立即跑,后续按 burstIntervalMs
-        if (burstEnabled) scheduleBurst(initialDelayMs = 0L)
+        // burst 探测:profile.burstEnabled 时,第一次立即跑,后续按 burstIntervalMs
+        if (currentProfile.burstEnabled) scheduleBurst(initialDelayMs = 0L)
     }
 
     override fun stop() {
@@ -167,6 +212,10 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         monitor.stop()
         timer.clear()
         prober?.cancel()
+        // stop 是 surveillance 的终态;listener 应当一并清掉,避免再次 start 时老 listener 漏接。
+        // 业务想在 restart 后继续收报告应在 start 之后重新 register。
+        listeners.clear()
+        ImcEvents.emit(ImcEvent.SurveillanceStopped())
     }
 
     override fun current(): NetReport = report
@@ -182,18 +231,48 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         runProbe(p, t) { callback(report) }
     }
 
+    override fun currentProfile(): NetProbeProfile = currentProfile
+
+    override fun setProfile(profile: NetProbeProfile) {
+        val oldProfile = synchronized(lock) {
+            val old = currentProfile
+            if (old == profile) return
+            currentProfile = profile
+            if (started) applyProfileChange(old, profile)
+            old
+        }
+        ImcEvents.emit(ImcEvent.NetProfileChanged(oldProfile, profile))
+    }
+
     override fun setBurstEnabled(enabled: Boolean) {
-        val wasEnabled: Boolean
-        synchronized(lock) {
-            wasEnabled = burstEnabled
-            burstEnabled = enabled
-            if (!started) return
-            if (enabled && !wasEnabled) {
-                // 用户刚打开 burst → 立即跑一次,不让等一整个间隔
+        // 等价于 setProfile(currentProfile.copy(burstEnabled = enabled));
+        // 走相同路径让 burst 切换逻辑只在一处。
+        setProfile(currentProfile.copy(burstEnabled = enabled))
+    }
+
+    /**
+     * profile 切换的副作用处理(必须持 lock 调用)。
+     *  - burstEnabled 翻转 → 起/停 burst 定时器
+     *  - 仅 burstIntervalMs 变 → 重排下一次 burst
+     *  - 频率参数变化(debounce / minInterval / probeTimeout)→ 自然在下次 scheduleProbe 生效,无需立即重排
+     */
+    private fun applyProfileChange(old: NetProbeProfile, new: NetProbeProfile) {
+        when {
+            new.burstEnabled && !old.burstEnabled -> {
                 scheduleBurst(initialDelayMs = 0L)
-            } else if (!enabled && wasEnabled) {
-                timer.unregister(BURST_TASK_ID)
             }
+            !new.burstEnabled && old.burstEnabled -> {
+                timer.unregister(BURST_TASK_ID)
+                // 已经在 prober.probeBurst 里跑的那一次也一并中断,避免"关了还在探"的尾巴。
+                // cancelBurst 默认实现退化为 cancel,自定义 prober 可精细区分 baseline / burst。
+                try { prober?.cancelBurst() } catch (e: Exception) { e.printStackTrace() }
+            }
+            new.burstEnabled && old.burstEnabled && new.burstIntervalMs != old.burstIntervalMs -> {
+                // 周期变了但仍开着 → 按新周期重排下一次。
+                timer.unregister(BURST_TASK_ID)
+                scheduleBurst(initialDelayMs = new.burstIntervalMs)
+            }
+            else -> { /* 其它字段下次 scheduleProbe 自然生效 */ }
         }
     }
 
@@ -212,7 +291,6 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         previousVerdict = snapshot.verdict
         if (justRecovered) {
             recoveryGraceUntilMs = System.currentTimeMillis() + RECOVERY_GRACE_MS
-            IMCLog.i("[surveillance] 网络恢复, 进入 ${RECOVERY_GRACE_MS}ms 宽限期 → 强制 IMMEDIATE")
         }
         applySnapshot(snapshot)
         when (snapshot.verdict) {
@@ -235,11 +313,12 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
     private fun scheduleProbe(immediate: Boolean) {
         val p = prober ?: return
         val t = probeTarget ?: return
+        val profile = currentProfile
 
         val now = System.currentTimeMillis()
-        if (now - lastProbeAt < minProbeIntervalMs && !immediate) return
+        if (now - lastProbeAt < profile.minProbeIntervalMs && !immediate) return
 
-        val delay = if (immediate) 0L else debounceMs
+        val delay = if (immediate) 0L else profile.debounceMs
         timer.register(PROBE_TASK_ID, delay) { runProbe(p, t, callback = null) }
     }
 
@@ -249,7 +328,8 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         callback: (() -> Unit)?
     ) {
         lastProbeAt = System.currentTimeMillis()
-        p.probe(t) { probeReport ->
+        // probeTimeoutMs 由 profile 决定,前台档可以更激进
+        p.probe(t, currentProfile.probeTimeoutMs) { probeReport ->
             val newReport = computeReport(monitor.current(), probeReport, report.lastBurstProbe)
             notifyIfChanged(newReport)
             callback?.invoke()
@@ -258,17 +338,23 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
 
     /**
      * burst 调度:启动 / 用户启用时传 [initialDelayMs] = 0 立即跑;
-     * 跑完后递归调用,默认使用 [burstIntervalMs] 排下一次
+     * 跑完后递归调用,使用当时 profile 的 burstIntervalMs 排下一次。
+     *
+     * 注意 register 用的 task id 是固定的 [BURST_TASK_ID],RRFv4 同 id 自动覆盖,
+     * profile 切换里 unregister + 新 register 是干净的。
      */
-    private fun scheduleBurst(initialDelayMs: Long = burstIntervalMs) {
-        if (!burstEnabled) return
+    private fun scheduleBurst(initialDelayMs: Long = currentProfile.burstIntervalMs) {
+        val profile = currentProfile
+        if (!profile.burstEnabled) return
         val p = prober ?: return
         val t = probeTarget ?: return
         timer.register(BURST_TASK_ID, initialDelayMs) {
+            // 这里再次读最新 currentProfile,因为 callback 触发时 profile 可能已经被改过
+            val curProfile = currentProfile
             p.probeBurst(
                 target = t,
-                attempts = burstAttempts,
-                perAttemptTimeoutMs = burstPerAttemptTimeoutMs,
+                attempts = curProfile.burstAttempts,
+                perAttemptTimeoutMs = curProfile.burstPerAttemptTimeoutMs,
             ) { burstReport ->
                 val newReport = NetReport(
                     snapshot = report.snapshot,
@@ -279,9 +365,9 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
                     lastBurstProbe = burstReport,
                 )
                 notifyIfChanged(newReport)
-                // 排下一次
+                // 排下一次。读 currentProfile 而不是闭包外 profile,跟随档位切换。
                 synchronized(lock) {
-                    if (started) scheduleBurst()
+                    if (started && currentProfile.burstEnabled) scheduleBurst()
                 }
             }
         }
@@ -301,7 +387,10 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
      * 融合规则:
      *  - 声明层强信号优先 (BLOCKED / OFFLINE / CAPTIVE_PORTAL 直接定终)
      *  - 其余情况下,探测层精化判定 (例如把 CHECKING_CONNECTIVITY 提级为 CONNECTED_NOT_VALIDATED)
-     *  - 探测层若超时,信任声明层
+     *  - 探测层若超时:
+     *      * 声明层 = OK → 降级为 CONNECTED_NOT_VALIDATED(probe 超时说明应用接入点大概率卡了,
+     *        让 recommend 走 BACKOFF_NORMAL 而不是被 OK 推向 IMMEDIATE 风暴)
+     *      * 其他声明层 → 信任声明层
      */
     private fun mergeVerdict(snapshot: NetSnapshot, probe: ProbeReport?): NetVerdict {
         when (snapshot.verdict) {
@@ -317,7 +406,9 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
                 ProbeVerdict.SERVER_DOWN,
                 ProbeVerdict.TLS_FAILURE,
                 ProbeVerdict.HTTP_DEGRADED -> NetVerdict.CONNECTED_NOT_VALIDATED
-                ProbeVerdict.PROBE_TIMEOUT -> snapshot.verdict
+                ProbeVerdict.PROBE_TIMEOUT ->
+                    if (snapshot.verdict == NetVerdict.OK) NetVerdict.CONNECTED_NOT_VALIDATED
+                    else snapshot.verdict
                 ProbeVerdict.SERVER_REACHABLE -> NetVerdict.OK
             }
         }
@@ -331,11 +422,18 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         probe: ProbeReport?,
         overall: NetVerdict
     ): ReconnectAction {
-        // 网络恢复宽限期内:只要不是明确离线,一律 IMMEDIATE。
-        // 覆盖两种情况 —— 恢复瞬间的 snapshot,以及宽限期里晚到的探测结果。
-        if (overall != NetVerdict.OFFLINE &&
-            System.currentTimeMillis() < recoveryGraceUntilMs
-        ) {
+        // 网络恢复宽限期内:对"软"终态(NOT_VALIDATED / SUSPENDED / CONGESTED / OK 等)强制 IMMEDIATE,
+        // 不让"刚恢复时 DNS/TCP 还没就绪"的探测失败把 autoConnect 拖进退避。
+        //
+        // **但硬终态保持自己的语义**:
+        //  - OFFLINE: 都没网,IMMEDIATE 毫无意义
+        //  - CAPTIVE_PORTAL: 等用户认证,IMMEDIATE 只会浪费资源
+        //  - BLOCKED: 应用被网络策略拦,IMMEDIATE 同上
+        // 这些走 recommendByVerdict 各自的 WAIT_USER / BACKOFF_LONG 路径。
+        val isHardTerminal = overall == NetVerdict.OFFLINE ||
+            overall == NetVerdict.CAPTIVE_PORTAL ||
+            overall == NetVerdict.BLOCKED
+        if (!isHardTerminal && System.currentTimeMillis() < recoveryGraceUntilMs) {
             return ReconnectAction.IMMEDIATE
         }
         return recommendByVerdict(probe, overall)
@@ -346,7 +444,13 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         overall: NetVerdict
     ): ReconnectAction = when (overall) {
         NetVerdict.OFFLINE -> ReconnectAction.BACKOFF_LONG
-        NetVerdict.BLOCKED -> ReconnectAction.WAIT_USER
+        // P2 修复:BLOCKED 来自 Android onBlockedStatusChanged(blocked=true),典型是后台应用进 Doze /
+        // 数据保护 / 后台数据限制时 OS 临时挡住 socket —— 它会随 Doze 维护窗口 / 应用回前台 / 网络变化
+        // **自动解除**,不需要用户介入。映射成 WAIT_USER(永久放弃、等用户手动 makeConnection)会让后台
+        // 连接被 Doze 挡一下就再也不重连(06-15 实测:03:39 进 BLOCKED 一直到 04:29 才靠 OS 翻回 OK 恢复,
+        // 中间 ~50min 完全不抢救)。改成 BACKOFF_LONG:慢速续命重试(省电),block 解除时
+        // onBlockedStatusChanged(false) → verdict 回 OK → onSurveillanceUpdate 立刻重排 IMMEDIATE 恢复。
+        NetVerdict.BLOCKED -> ReconnectAction.BACKOFF_LONG
         NetVerdict.CAPTIVE_PORTAL -> ReconnectAction.WAIT_USER
         NetVerdict.CONNECTED_NOT_VALIDATED -> {
             val publicOk = probe?.publicRef?.success == true
@@ -365,16 +469,49 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
     }
 
     private fun notifyIfChanged(next: NetReport) {
+        val prev: NetReport
+        val changedSnapshot: Boolean
+        val changedReport: Boolean
         synchronized(lock) {
-            if (sameMeaning(next, report)) return
+            prev = report
+            if (sameMeaning(next, prev)) return
+            // 拆 snapshot 变化 vs report 整体变化两条事件,UI 可分开渲染
+            changedSnapshot = !sameSnapshot(next.snapshot, prev.snapshot)
+            changedReport = next.overall != prev.overall ||
+                next.recommend != prev.recommend ||
+                !sameProbe(next.lastProbe, prev.lastProbe)
             report = next
         }
+        // 锁外:本地业务 listener
         listeners.forEach {
             try {
                 it.onReport(next)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
+        }
+        // 锁外:全局事件总线
+        if (changedSnapshot) {
+            val s = next.snapshot
+            ImcEvents.emit(
+                ImcEvent.NetSnapshotChanged(
+                    verdict = s.verdict,
+                    capabilities = s.capabilities,
+                    transports = s.transports,
+                    linkUpKbps = s.linkUpKbps,
+                    linkDownKbps = s.linkDownKbps,
+                    signalStrengthDbm = s.signalStrengthDbm,
+                )
+            )
+        }
+        if (changedReport) {
+            ImcEvents.emit(
+                ImcEvent.NetReportChanged(
+                    overall = next.overall,
+                    recommend = next.recommend,
+                    probeVerdict = next.lastProbe?.verdict,
+                )
+            )
         }
     }
 
@@ -387,8 +524,8 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         return true
     }
 
-    private fun sameSnapshot(a: NetSnapshot, b: NetSnapshot): Boolean =
-        a.copy(timestamp = 0L) == b.copy(timestamp = 0L)
+    // NetSnapshot.equals 已忽略 timestamp,直接用 ==
+    private fun sameSnapshot(a: NetSnapshot, b: NetSnapshot): Boolean = a == b
 
     private fun sameProbe(a: ProbeReport?, b: ProbeReport?): Boolean {
         if (a == null && b == null) return true
@@ -414,39 +551,20 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         internal var monitor: NetStateMonitor? = null
         internal var prober: NetProber? = null
         internal var probeTarget: ProbeTarget? = null
-        internal var minProbeIntervalMs: Long = 10_000L
-        internal var debounceMs: Long = 500L
 
-        internal var burstEnabled: Boolean = false
-        internal var burstIntervalMs: Long = 30_000L
-        internal var burstAttempts: Int = 5
-        internal var burstPerAttemptTimeoutMs: Int = 2_000
+        /** 初始 profile;默认 [NetProbeProfile.BALANCED] */
+        internal var profile: NetProbeProfile = NetProbeProfile.BALANCED
 
         fun monitor(m: NetStateMonitor) = apply { this.monitor = m }
         fun prober(p: NetProber) = apply { this.prober = p }
         fun probeTarget(t: ProbeTarget) = apply { this.probeTarget = t }
-        fun minProbeIntervalMs(ms: Long) = apply { this.minProbeIntervalMs = ms }
-        fun debounceMs(ms: Long) = apply { this.debounceMs = ms }
 
         /**
-         * 启用突发探测,周期性产出 RTT 分布 / 丢包 / 抖动。
+         * 设置初始探测档位。运行时仍可通过 [NetSurveillance.setProfile] 切换。
          *
-         * 关闭(默认)时 [NetReport.lastBurstProbe] 永远是 null,这套机制零开销。
-         *
-         * @param intervalMs 两次 burst 之间的间隔,默认 30s
-         * @param attempts 每次 burst 内的 TCP 连接数,默认 5
-         * @param perAttemptTimeoutMs 单次 TCP connect 超时,默认 2s
+         * 不调 = [NetProbeProfile.BALANCED] 默认前台档。
          */
-        fun enableBurst(
-            intervalMs: Long = 30_000L,
-            attempts: Int = 5,
-            perAttemptTimeoutMs: Int = 2_000,
-        ) = apply {
-            this.burstEnabled = true
-            this.burstIntervalMs = intervalMs
-            this.burstAttempts = attempts
-            this.burstPerAttemptTimeoutMs = perAttemptTimeoutMs
-        }
+        fun profile(p: NetProbeProfile) = apply { this.profile = p }
 
         fun build(): DefaultNetSurveillance = DefaultNetSurveillance(this)
     }

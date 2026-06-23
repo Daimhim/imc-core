@@ -46,9 +46,19 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
     // ── 配置 ────────────────────────────────────────────────────────────
     private val heartbeatMode: Map<Int, ILinkNative> = builder.heartbeatMode
-    private val autoConnect: IAutoConnect? = builder.autoConnect
+    // autoConnect 在 V2 链路里是必备组件,Builder.build() 已强制非空:
+    //  - handleAfterClose 的 Connected→Reconnecting 分支依赖 autoConnect 接管退避,
+    //    否则 engine 会卡死在 Reconnecting;
+    //  - Reconnecting 分支的"切 URL 立即重启 vs 让 autoConnect 退避"判断也需要 isActive()。
+    private val autoConnect: IAutoConnect = builder.autoConnect
+        ?: error("autoConnect 不能为空,请通过 Builder.setAutoConnect 注入")
     private val messageCache: IMessageCache = builder.messageCache
     private val keyProvider: IKeyProvider? = builder.keyProvider
+    private val certificatePinner: CertificatePinner? = builder.certificatePinner
+    // P1: 端侧 DNS 缓存(TTL + stale-fallback)。注入到每个 WebSocketClientImpl,让重连在 DNS 抖动时
+    // 用历史 IP 续命。默认 new 一个;App 可通过 Builder.setDnsCache 传共享实例(与 NetProber 共用,
+    // 探测成功也能预热缓存)。
+    private val dnsCache: DnsCache = builder.dnsCache
     private val connectTimeout: Int = 5 * 1000
 
     /**
@@ -63,7 +73,6 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     private val autoConnectReconnector = IReconnector {
         val nextKey = resolveReconnectKey()
         if (nextKey == null) {
-            IMCLog.w("[reconnector] 跳过本次重连:KeyProvider 返回 null 且当前没有缓存 key")
             return@IReconnector
         }
         Thread({ engineOn(nextKey) }, "V2JWE-restart").start()
@@ -77,7 +86,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         keyProvider?.runCatching { provide() }?.getOrNull() ?: state.targetKey()
 
     init {
-        autoConnect?.setReconnector(autoConnectReconnector)
+        autoConnect.setReconnector(autoConnectReconnector)
     }
 
     /**
@@ -117,35 +126,94 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     private val javaWebsocketListener = object : JavaWebSocketListener {
         override fun onOpen(handshakedata: ServerHandshake?) {
             handshakeWatchdog.unregister(handshakeWatchdogId)
-            IMCLog.i("onOpen ${handshakedata?.httpStatus} ${handshakedata?.httpStatusMessage}")
-            synchronized(syncJWE) {
+            ImcEvents.emit(
+                ImcEvent.ConnectionOpened(
+                    httpStatus = handshakedata?.httpStatus?.toInt(),
+                    httpStatusMessage = handshakedata?.httpStatusMessage,
+                )
+            )
+            val transitionTo: String? = synchronized(syncJWE) {
                 val key = state.targetKey()
+                val prev = state
                 if (key != null) state = EngineState.Connected(key)
-                IMCLog.i("transition → $state")
+                if (state !== prev) state.toString() else null
+            }
+            if (transitionTo != null) {
+                // emit 在锁外:transitionTo 已经捕获了新状态字符串,这里不再触碰 state
+                ImcEvents.emit(
+                    ImcEvent.EngineStateTransition(
+                        from = "Connecting/Reconnecting",
+                        to = transitionTo,
+                        reason = "onOpen",
+                    )
+                )
             }
             imcStatusListener?.connectionSucceeded()
         }
 
         override fun onMessage(message: String) {
-            IMCLog.i("onMessage str:$message")
             imcListenerManager.onMessage(this@V2JavaWebEngine, message)
         }
 
         override fun onMessage(bytes: ByteBuffer) {
-            IMCLog.i("onMessage bytes:${bytes.limit()}")
             imcListenerManager.onMessage(this@V2JavaWebEngine, bytes.array())
         }
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {
-            IMCLog.i("onClose code:$code reason:$reason remote:$remote")
+            ImcEvents.emit(ImcEvent.ConnectionClosed(code, reason, remote))
             imcStatusListener?.connectionClosed(code, reason)
             handleAfterClose()
         }
 
         override fun onError(ex: Exception) {
-            IMCLog.i(ex, "onError")
+            ImcEvents.emit(
+                ImcEvent.ConnectionLost(
+                    errorClass = ex.javaClass.simpleName,
+                    message = ex.message,
+                )
+            )
+            // A4: SSL/TLS 错误细分类,给业务侧分诊 UX 用
+            emitTlsFailureIfApplicable(ex)
             imcStatusListener?.connectionLost(ex)
             handleAfterClose()
+        }
+
+        /**
+         * A4: 把 onError 里的 SSL/TLS 异常拆成 [ImcEvent.TlsFailure] 分类事件。
+         *
+         * 分类规则(JVM/OkHttp 的常见异常映射):
+         *  - SSLHandshakeException → HANDSHAKE(握手期失败,常见对端拒绝/拦截)
+         *  - SSLPeerUnverifiedException → PIN_FAILURE(证书校验失败)
+         *  - SSLProtocolException 含 "close_notify" → CLOSE_NOTIFY
+         *  - SSLProtocolException 其余 → READ/WRITE(此处无方向区分,先并入 READ)
+         *  - SSLException 兜底 → UNKNOWN
+         *
+         * 不是 SSL 类异常直接 return,不 emit。
+         */
+        private fun emitTlsFailureIfApplicable(ex: Throwable) {
+            val name = ex.javaClass.simpleName
+            val msg = ex.message.orEmpty()
+            val stage = when {
+                name == "SSLHandshakeException" -> ImcEvent.TlsFailure.Stage.HANDSHAKE
+                name == "SSLPeerUnverifiedException" -> ImcEvent.TlsFailure.Stage.PIN_FAILURE
+                name == "SSLProtocolException" && msg.contains("close_notify", ignoreCase = true) ->
+                    ImcEvent.TlsFailure.Stage.CLOSE_NOTIFY
+                name == "SSLProtocolException" -> ImcEvent.TlsFailure.Stage.READ
+                name.startsWith("SSL") -> ImcEvent.TlsFailure.Stage.UNKNOWN
+                else -> return
+            }
+            // 简单启发:"Connection closed by peer" / "closed the connection" / "reset by peer" 视作对端关
+            val peerInitiated = msg.contains("closed by peer", ignoreCase = true) ||
+                msg.contains("closed the connection", ignoreCase = true) ||
+                msg.contains("reset by peer", ignoreCase = true)
+            ImcEvents.emit(
+                ImcEvent.TlsFailure(
+                    stage = stage,
+                    errorClass = name,
+                    message = ex.message,
+                    isPeerInitiated = peerInitiated,
+                )
+            )
         }
 
         /**
@@ -157,33 +225,40 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
          */
         private fun handleAfterClose() {
             handshakeWatchdog.unregister(handshakeWatchdogId)
+            // 锁内只搬状态机 + 抓 transition 描述,事件 emit 移到锁外
+            data class Transition(val from: String, val to: String, val reason: String)
+            var transition: Transition? = null
             val nextKey: String? = synchronized(syncJWE) {
                 when (val s = state) {
                     is EngineState.Reconnecting -> {
-                        // 两种情况都会落到这里:
-                        //  (A) dispatchEngineOn 因 URL 切换提前置 Reconnecting,且关掉了旧 client → 应立刻重启新 client
-                        //  (B) ProgressiveAutoConnect 调 webSocketClient.reconnect() 触发 onClose 时,
-                        //      state 已经由前一次 handleAfterClose 第二分支搬到 Reconnecting
-                        // (B) 必须让出控制权给 autoConnect 自己驱动退避,否则会无视退避立即重连 → 风暴
                         webSocketClient = null
-                        // fallback 重启走 resolveReconnectKey():有 KeyProvider 就拿 Provider 的最新 url,
-                        // 没有就退到 s.key(state 缓存)。跟 autoConnectReconnector 行为一致。
-                        if (autoConnect?.isActive() == true) null else resolveReconnectKey()
+                        if (autoConnect.isActive()) null else resolveReconnectKey()
                     }
                     is EngineState.Connected, is EngineState.Connecting -> {
                         val k = s.targetKey()!!
+                        val prev = s.toString()
                         state = EngineState.Reconnecting(k)
-                        IMCLog.i("transition → $state (waiting auto-reconnect)")
+                        // 旧 client 必须置 null:后续 autoConnect alarm fire 调 engineOn(same key)
+                        // 时,dispatchEngineOn 的 Reconnecting-same-key 分支依赖 webSocketClient == null
+                        // 才会走 spawnNewClient。漏置会导致 alarm fire 后静默 no-op,引擎 hang
+                        // 在 Reconnecting 状态,业务侧表现为"点了 Connect 很久不连上"。
+                        webSocketClient = null
+                        transition = Transition(prev, state.toString(), "waiting auto-reconnect")
                         null
                     }
                     EngineState.Closing -> {
                         webSocketClient = null
                         state = EngineState.Idle
-                        IMCLog.i("transition → Idle")
+                        transition = Transition("Closing", "Idle", "engineOff complete")
                         null
                     }
                     EngineState.Idle -> null
                 }
+            }
+            transition?.let {
+                ImcEvents.emit(
+                    ImcEvent.EngineStateTransition(it.from, it.to, it.reason)
+                )
             }
             // 锁外 engineOn 避免重入
             if (nextKey != null) {
@@ -195,10 +270,14 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     // ── IEngine API ────────────────────────────────────────────────────
 
     override fun engineOn(key: String) {
+        // 锁内只动状态机;事件 emit 放锁外,避免 sink 卡死引擎入口
+        val keyChangeEvent: ImcEvent.EngineKeyChanged?
         synchronized(syncJWE) {
-            IMCLog.i("engineOn key=$key state=$state")
+            val oldKey = state.targetKey()
+            keyChangeEvent = if (oldKey != key) ImcEvent.EngineKeyChanged(oldKey, key) else null
             dispatchEngineOn(key)
         }
+        keyChangeEvent?.let { ImcEvents.emit(it) }
     }
 
     /** 必须在 syncJWE 锁内调用 */
@@ -216,8 +295,16 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 state = EngineState.Reconnecting(key)
                 webSocketClient?.close()
             }
-            s is EngineState.Reconnecting && key == s.key && webSocketClient == null -> {
-                // 同 key 且旧 client 已被 handleAfterClose 释放 → 重启
+            s is EngineState.Reconnecting && key == s.key -> {
+                // 同 key 调度的重连进来(典型:autoConnect alarm fire 走 reconnector.restart →
+                // engineOn(同 key))。理论上 webSocketClient 已被 handleAfterClose 置 null;
+                // 兜底:若没置(历史 bug 残留 / 其他路径),这里先把旧 client 关掉再 spawn,
+                // 避免错过 spawnNewClient 导致 engine 静默挂死。close 幂等,旧 client 已 closed
+                // 不会出错。
+                webSocketClient?.let {
+                    try { it.close() } catch (_: Exception) {}
+                }
+                webSocketClient = null
                 spawnNewClient(key)
             }
             s is EngineState.Reconnecting && key != s.key -> {
@@ -229,7 +316,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
     }
 
-    /** 必须在 syncJWE 锁内调用 */
+    /**
+     * 必须在 syncJWE 锁内调用。
+     * **不在这里 emit ImcEvent**:state transition 事件由 onOpen / handleAfterClose 等更准确的位置触发,
+     * 这里 Connecting 状态只是中间态,emit 反而噪声大。
+     */
     private fun spawnNewClient(key: String) {
         val finalUrl = normalizeUrl(key)
         val uri = try {
@@ -248,6 +339,8 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             uri,
             timeout = connectTimeout,
             messageCache = messageCache,
+            certificatePinner = certificatePinner,
+            dnsCache = dnsCache,
         ).apply {
             javaWebSocketListener = this@V2JavaWebEngine.javaWebsocketListener
             setAutoConnect(autoConnect)
@@ -256,7 +349,6 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
         webSocketClient = client
         state = EngineState.Connecting(key)
-        IMCLog.i("transition → $state, connecting... heartbeatMode=$pendingMode")
         armHandshakeWatchdog(client, key)
         client.connect()
     }
@@ -273,12 +365,16 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      */
     private fun armHandshakeWatchdog(client: WebSocketClientImpl, key: String) {
         handshakeWatchdog.register(handshakeWatchdogId, handshakeTimeoutMs) { _ ->
-            synchronized(syncJWE) {
+            // 先在锁内判定是否真要 fire,fire 决策与事件 emit 分离避免持锁
+            val fired: Boolean = synchronized(syncJWE) {
                 val s = state
                 if (s is EngineState.Connecting && s.key == key && webSocketClient === client) {
-                    IMCLog.w("handshake watchdog 超时(${handshakeTimeoutMs}ms), 强关 client → 走 Reconnecting")
                     client.close()
-                }
+                    true
+                } else false
+            }
+            if (fired) {
+                ImcEvents.emit(ImcEvent.HandshakeWatchdogFired(key, handshakeTimeoutMs))
             }
         }
     }
@@ -317,9 +413,10 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     }
 
     override fun engineOff() {
-        synchronized(syncJWE) {
-            IMCLog.i("engineOff state=$state")
-            if (state == EngineState.Idle) return
+        // 锁内推进状态机 + 关 client;锁外做 clear 缓存 / 通知监听 / dispose autoConnect,
+        // 避免长操作 / 用户回调阻塞 syncJWE。
+        val shouldNotify = synchronized(syncJWE) {
+            if (state == EngineState.Idle) return@synchronized false
             handshakeWatchdog.unregister(handshakeWatchdogId)
             state = EngineState.Closing
             val client = webSocketClient
@@ -328,11 +425,26 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             client?.javaWebSocketListener = null
             client?.stopConnectionLostTimerEx(false)
             client?.stopAutoConnect()
-            client?.close()
+            // 必须用 closeAndTerminate 而非 close():engineOff 是终止意图,需要标记 isClosed=true
+            // 阻止 onClose/onError 把 autoConnect 重新唤醒。普通 close() 现在故意不设 isClosed,
+            // 是为了让握手 watchdog / 心跳判死 / URL 切换 都能走标准抢救链。
+            client?.closeAndTerminate()
             webSocketClient = null
             state = EngineState.Idle
-            IMCLog.i("transition → Idle")
+            true
         }
+        if (!shouldNotify) return
+        // 真正的会话终止才清缓存(持久化实现的 clear() 会抹掉文件 / SP)。
+        // 切 URL 那条路径不走 engineOff,因此不会误伤缓存。
+        try { messageCache.clear() } catch (e: Exception) { e.printStackTrace() }
+        // 释放 autoConnect 持有的外部资源(典型:NetSurveillance 的 listener),避免泄漏。
+        // 如果用户在 engineOff 后又调 engineOn 复用同一 engine,需要新建 builder 重新注入 autoConnect。
+        try { autoConnect.dispose() } catch (e: Exception) { e.printStackTrace() }
+        // 业务侧主动 engineOff 也应该收到一次明确的 connectionClosed 回调 ——
+        // 由于 listener 在 close 之前已被解绑,onClose 不会回到 V2JWE 的 javaWebsocketListener,
+        // 这里走快路径补一次,避免业务漏判终止信号。
+        imcStatusListener?.connectionClosed(CloseFrame.NORMAL, "engineOff")
+        ImcEvents.emit(ImcEvent.EngineStopped())
     }
 
     /** 内部辅助:当前是否处于 Connected 状态 */
@@ -381,11 +493,14 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     }
 
     override fun onChangeMode(mode: Int) {
-        IMCLog.i("onChangeMode $mode (prev pendingMode=$pendingMode)")
+        val prev = pendingMode
         // 不管 webSocketClient 是否已建, 都记下这次调用 — 下次 spawnNewClient 会用它
         pendingMode = mode
         heartbeatMode[mode]?.let {
             webSocketClient?.onChangeMode(it)
+        }
+        if (prev != mode) {
+            ImcEvents.emit(ImcEvent.HeartbeatModeChanged(prev, mode))
         }
     }
 
@@ -408,7 +523,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         if (client != null) {
             client.resetStartAutoConnect()
         } else {
-            autoConnect?.resetStartAutoConnect()
+            autoConnect.resetStartAutoConnect()
         }
     }
 
@@ -419,7 +534,34 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         httpHeaders: Map<String, String> = mutableMapOf(),
         timeout: Int = 0,
         private val messageCache: IMessageCache = InMemoryMessageCache(),
+        /** A5: 证书指纹校验钩子,null 表示不做 pinning */
+        private val certificatePinner: CertificatePinner? = null,
+        /** P1: 端侧 DNS 缓存,接进库的 DnsResolver,DNS 抖动时回退历史 IP */
+        private val dnsCache: DnsCache = DnsCache(),
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
+
+        init {
+            // R6 修复:Java-WebSocket 自带 LCD(60s 默认)在 [WebSocket.startConnectionLostTimer]
+            // 时直接读 `connectionLostTimeout` 私有字段决定是否起 timer —— 我们 override
+            // [getConnectionLostTimeout] / [setConnectionLostTimeout] 只能拦截方法调用,改不了字段。
+            // 唯一办法:在构造期把字段真置 0,LCD 整个机制就被绕开了。
+            //
+            // 原因:R4 22h 459 次 onOpen 里 303 次 1006(占 66%)全是 LCD 等不到 WS-level PONG 杀
+            // 活连接 — V2Fixed 走 customHeartbeat(binary gzip "心跳内容")路径时不发 WS-level PING,
+            // 服务端也不主动发 PONG 帧,LCD 永远等不到。本类 [linkNative] 自管心跳调度,LCD 冗余且有害。
+            super.setConnectionLostTimeout(0)
+
+            // P1: 把库的 DNS 解析换成 DnsCache。Java-WebSocket 1.5.4 起支持 setDnsResolver;
+            // 默认实现每次连接走 new InetSocketAddress(host) 直查系统 DNS —— DNS 抖动(Server A
+            // 06-15 实测连环 UnknownHostException)时直接把重连打死。换成 DnsCache 后:TTL 内命中
+            // 缓存、过期 fresh 解析、fresh 失败回退上次成功 IP(stale window 内),把短时 DNS 故障
+            // 对长连接的影响抹平。DnsResolver 只能返回单个 InetAddress,取首个。
+            setDnsResolver { resolveUri ->
+                val host = resolveUri.host ?: throw java.net.UnknownHostException("null host")
+                dnsCache.resolve(host).firstOrNull()
+                    ?: throw java.net.UnknownHostException(host)
+            }
+        }
 
         var javaWebSocketListener: JavaWebSocketListener? = null
         private var isClosed = false
@@ -434,6 +576,12 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         // ── 协议层(java-websocket 回调)──────────────────────────────
 
         override fun onOpen(handshakedata: ServerHandshake?) {
+            // A5: cert pinning 校验。失败立即 close,不进入正常 onOpen 路径。
+            //   pin 失败 → emit TlsFailure(PIN_FAILURE) + close() → 走 onClose → 标准抢救链。
+            if (certificatePinner != null && !verifyCertificatePin()) {
+                close()
+                return
+            }
             retryingSendingCache()
             startConnectionLostTimerEx()
             linkNative?.updateLastPong()
@@ -441,15 +589,64 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             javaWebSocketListener?.onOpen(handshakedata)
         }
 
+        /**
+         * A5: 用 [certificatePinner] 比对 SSLSession.peerCertificates。
+         * 仅在 wss:// 路径下检查;ws:// 跳过(无证书可比);非 SSL Socket 也跳过。
+         */
+        private fun verifyCertificatePin(): Boolean {
+            val pinner = certificatePinner ?: return true
+            val socket = try { socket } catch (_: Exception) { null } ?: return true
+            if (socket !is javax.net.ssl.SSLSocket) return true
+            val certs = try { socket.session.peerCertificates.toList() } catch (e: Exception) {
+                ImcEvents.emit(
+                    ImcEvent.TlsFailure(
+                        stage = ImcEvent.TlsFailure.Stage.PIN_FAILURE,
+                        errorClass = e.javaClass.simpleName,
+                        message = "peerCertificates threw: ${e.message}",
+                        isPeerInitiated = false,
+                    )
+                )
+                return false
+            }
+            val host = try { uri.host } catch (_: Exception) { "" } ?: ""
+            val ok = try { pinner.pin(host, certs) } catch (e: Exception) {
+                ImcEvents.emit(
+                    ImcEvent.InternalError(
+                        site = "CertificatePinner.pin",
+                        errorClass = e.javaClass.simpleName,
+                        message = e.message,
+                    )
+                )
+                false
+            }
+            if (!ok) {
+                ImcEvents.emit(
+                    ImcEvent.TlsFailure(
+                        stage = ImcEvent.TlsFailure.Stage.PIN_FAILURE,
+                        errorClass = "CertificatePinner",
+                        message = "pin rejected for host=$host",
+                        isPeerInitiated = false,
+                    )
+                )
+            }
+            return ok
+        }
+
         override fun onMessage(message: String) {
             retryingSendingCache()
             linkNative?.updateLastPong()
+            // A1: 心跳应答(如 dataPing 的 "HEART_BEAT")由 SDK 吞掉,不转发给业务 listener。
+            // updateLastPong 上面已经触发过,所以这里只做"是否转发"的过滤。
+            if (linkNative?.isIncomingHeartbeat(message) == true) return
             javaWebSocketListener?.onMessage(message)
         }
 
         override fun onMessage(bytes: ByteBuffer) {
             retryingSendingCache()
             linkNative?.updateLastPong()
+            // A1: 同上,二进制心跳应答也由 SDK 吞掉。
+            val byteArray = ByteArray(bytes.remaining()).also { bytes.duplicate().get(it) }
+            if (linkNative?.isIncomingHeartbeat(byteArray) == true) return
             javaWebSocketListener?.onMessage(bytes)
         }
 
@@ -477,17 +674,35 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             javaWebSocketListener?.onError(ex)
             if (isClosed) return
             stopConnectionLostTimerEx(true)
+            // A6: 把最近一次 onError 的异常类告诉 autoConnect,让 SSL 连续错触发 forceProbe
+            autoConnect?.onErrorSignal(ex.javaClass.simpleName)
             abnormalDisconnectionAndAutomaticReconnection()
         }
 
         override fun close() {
             super.close()
+            // 不设 isClosed=true:历史上这里设过,导致握手 watchdog / 心跳判死 调 close() 后,
+            // 紧接着的 onError / onClose 走 isClosed 早返回分支,**跳过**
+            // [abnormalDisconnectionAndAutomaticReconnection],autoConnect 不会被调度,
+            // 引擎卡死在 Reconnecting,业务侧表现为"点 Connect 很久不连上"(P0)。
+            // 现在的语义是:close() = 软 close,让 onClose / onError 继续走标准抢救链;
+            // engineOff 真正终止会话要走 [closeAndTerminate],显式标记 isClosed 阻断 autoConnect。
+            // 同样**不**调 messageCache.clear() —— URL 切换路径也会走 close(),清了等于丢消息;
+            // 清缓存只在 engineOff 的快路径里做。
+        }
+
+        /**
+         * engineOff 专用:close + 标记 isClosed=true,阻断后续 onClose/onError 触发 autoConnect。
+         *
+         * 普通的 close() 调用方(握手 watchdog / 心跳判死 / URL 切换)绝对**不要**走这条 ——
+         * 它们都依赖 onClose 继续往下走 [abnormalDisconnectionAndAutomaticReconnection]
+         * 让 autoConnect 接管下一轮调度。
+         */
+        fun closeAndTerminate() {
             synchronized(syncConnectionLost) {
                 isClosed = true
             }
-            // 显式 close 意味着用户希望终止本次会话, 缓存按现有语义一起丢弃。
-            // 注意:持久化实现的 clear() 会同步抹掉文件 / SP, 这跟"关掉就别记账"的预期一致。
-            messageCache.clear()
+            super.close()
         }
 
         override fun connect() {
@@ -540,7 +755,6 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
 
         internal fun resetStartAutoConnect() {
-            IMCLog.i("resetStartAutoConnect")
             linkNative?.stopConnectionLostTimer()
             autoConnect?.resetStartAutoConnect()
         }
@@ -562,44 +776,54 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
         override fun send(text: String?) {
             if (text.isNullOrEmpty()) return
-            synchronized(cacheSync) {
+            // 锁内只动缓存,锁外 emit:synchronized 是 inline 的,non-local return 可以直接跳出 send
+            val cachedEvent: ImcEvent.MessageCached = synchronized(cacheSync) {
                 if (isOpen) {
-                    super.send(text); return
+                    super.send(text)
+                    return  // non-local return → 不走 emit
                 }
-                messageCache.put(
-                    CachedMessage.Text(RapidResponseForceV4.makeOnlyId(), text)
-                )
+                val msg = CachedMessage.Text(RapidResponseForceV4.makeOnlyId(), text)
+                messageCache.put(msg)
+                ImcEvent.MessageCached(msg.id, isText = true, sizeBytes = msg.sizeBytes)
             }
+            ImcEvents.emit(cachedEvent)
         }
 
         override fun send(data: ByteArray?) {
             if (data == null) return
-            synchronized(cacheSync) {
+            val cachedEvent: ImcEvent.MessageCached = synchronized(cacheSync) {
                 if (isOpen) {
-                    super.send(data); return
+                    super.send(data)
+                    return
                 }
-                messageCache.put(
-                    CachedMessage.Binary(RapidResponseForceV4.makeOnlyId(), data)
-                )
+                val msg = CachedMessage.Binary(RapidResponseForceV4.makeOnlyId(), data)
+                messageCache.put(msg)
+                ImcEvent.MessageCached(msg.id, isText = false, sizeBytes = msg.sizeBytes)
             }
+            ImcEvents.emit(cachedEvent)
         }
 
         override fun send(bytes: ByteBuffer?) {
             if (bytes == null) return
-            synchronized(cacheSync) {
+            val cachedEvent: ImcEvent.MessageCached = synchronized(cacheSync) {
                 if (isOpen) {
-                    super.send(bytes); return
+                    super.send(bytes)
+                    return
                 }
                 // ByteBuffer 可能直接共享底层数组,持久化场景必须复制成独立 byte[]
                 val arr = ByteArray(bytes.remaining())
                 bytes.duplicate().get(arr)
-                messageCache.put(
-                    CachedMessage.Binary(RapidResponseForceV4.makeOnlyId(), arr)
-                )
+                val msg = CachedMessage.Binary(RapidResponseForceV4.makeOnlyId(), arr)
+                messageCache.put(msg)
+                ImcEvent.MessageCached(msg.id, isText = false, sizeBytes = msg.sizeBytes)
             }
+            ImcEvents.emit(cachedEvent)
         }
 
         private fun retryingSendingCache() {
+            // 收集本次 flush 的事件,锁内只填,锁外统一 emit
+            val flushedEvents = ArrayList<ImcEvent>()
+            var remaining = 0
             synchronized(cacheSync) {
                 if (!isOpen || messageCache.isEmpty()) return@synchronized
                 var flushed = 0
@@ -608,19 +832,25 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                     if (!isOpen) {
                         // 中途断了,放回队首等下次
                         messageCache.pushFirst(item)
-                        IMCLog.i("retryingSendingCache 中途断, 已 flush $flushed 条, 剩 ${messageCache.size()} 条")
-                        return@synchronized
+                        remaining = messageCache.size()
+                        break
                     }
                     val frames = when (val m: CachedMessage = item) {
                         is CachedMessage.Text -> draft.createFrames(m.text, true)
                         is CachedMessage.Binary -> draft.createFrames(ByteBuffer.wrap(m.data), true)
                     }
                     sendFrame(frames)
+                    flushedEvents.add(ImcEvent.MessageFlushed(item.id, item.sizeBytes))
                     flushed++
                     item = messageCache.pollFirst()
                 }
-                if (flushed > 0) IMCLog.i("retryingSendingCache 全部 flush 完, 共 $flushed 条")
+                if (remaining == 0) remaining = messageCache.size()
+                if (flushed > 0) {
+                    flushedEvents.add(ImcEvent.CacheFlushBatch(flushed = flushed, remaining = remaining))
+                }
             }
+            // 锁外 emit
+            for (e in flushedEvents) ImcEvents.emit(e)
         }
 
     }
@@ -634,16 +864,19 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     }
 
     class Builder {
-        internal var imcLogFactory: IIMCLogFactory? = null
         internal var heartbeatMode = mutableMapOf<Int, ILinkNative>()
         internal var defHeartbeatMode = 0
         internal var autoConnect: IAutoConnect? = null
         internal var messageCache: IMessageCache = InMemoryMessageCache()
         internal var keyProvider: IKeyProvider? = null
+        internal var certificatePinner: CertificatePinner? = null
+        internal var dnsCache: DnsCache = DnsCache()
 
-        fun setIMCLog(imcLogFactory: IIMCLogFactory) = apply {
-            this.imcLogFactory = imcLogFactory
-        }
+        /** A5: 证书指纹校验钩子;wss:// 握手后立即比对,不通过则触发 close + TlsFailure(PIN_FAILURE) */
+        fun setCertificatePinner(pinner: CertificatePinner) = apply { certificatePinner = pinner }
+
+        /** P1: 注入共享 DnsCache(与 NetProber 共用可让探测预热连接用的解析)。不设 = 引擎自带一个。 */
+        fun setDnsCache(cache: DnsCache) = apply { this.dnsCache = cache }
 
         /**
          * 设置 URL Provider:每次 autoConnect 触发重连时调用,拿到最新 url。
@@ -680,9 +913,6 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
          */
         fun setMessageCache(cache: IMessageCache) = apply { this.messageCache = cache }
 
-        fun build(): V2JavaWebEngine {
-            IMCLog.setIIMCLogFactory(imcLogFactory)
-            return V2JavaWebEngine(this)
-        }
+        fun build(): V2JavaWebEngine = V2JavaWebEngine(this)
     }
 }

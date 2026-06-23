@@ -20,12 +20,12 @@ object IEngineState {
     val ENGINE_FAILED: Int = 3
 
     /**
-     * 关闭质指令
+     * 关闭指令
      */
     @JvmStatic
     val ENGINE_CLOSED: Int = 1000
     /**
-     * 关闭质指令
+     * 关闭指令
      */
     @JvmStatic
     val ENGINE_CLOSED_FAILED: Int = 1006

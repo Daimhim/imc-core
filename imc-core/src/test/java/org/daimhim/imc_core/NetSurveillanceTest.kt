@@ -58,8 +58,7 @@ class NetSurveillanceTest {
         .monitor(monitor)
         .apply { prober?.let { prober(it) } }
         .probeTarget(ProbeTarget("api.example.com", 443, true))
-        .debounceMs(0L)
-        .minProbeIntervalMs(0L)
+        .profile(NetProbeProfile.BALANCED.copy(debounceMs = 0L, minProbeIntervalMs = 0L))
         .build()
 
     // ── 融合规则:声明层强信号优先 ────────────────────────────────────────────
@@ -202,7 +201,7 @@ class NetSurveillanceTest {
         val monitor = FakeNetStateMonitor(snap(NetVerdict.OK))
         val sv = buildSurveillance(monitor)
         val received = CopyOnWriteArrayList<NetReport>()
-        sv.register { received.add(it) }
+        sv.register(NetReportListener { received.add(it) })
 
         sv.start()
         monitor.emit(snap(NetVerdict.OFFLINE))
@@ -280,7 +279,7 @@ class NetSurveillanceTest {
         val captured = AtomicReference<NetReport?>(null)
 
         sv.start()
-        sv.forceProbe { captured.set(it) }
+        sv.forceProbe { r -> captured.set(r) }
 
         assertNotNull("无 prober 时 forceProbe 也应回调当前报告", captured.get())
         assertNull("无 prober 时 lastProbe 应为 null", captured.get()?.lastProbe)

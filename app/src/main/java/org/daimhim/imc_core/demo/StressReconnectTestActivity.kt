@@ -8,7 +8,7 @@ import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import org.daimhim.imc_core.IMCStatusListener
-import org.daimhim.imc_core.TimberIMCLog
+import org.daimhim.imc_core.ProgressiveAutoConnect
 import org.daimhim.imc_core.V2FixedHeartbeat
 import org.daimhim.imc_core.V2JavaWebEngine
 import java.io.File
@@ -30,7 +30,7 @@ class StressReconnectTestActivity : AppCompatActivity() {
 
     companion object {
         private const val URL_TEMPLATE =
-            "wss://<your-server>/ws?token=%s&name=%s&platform=android&state=1"
+            "wss://your-im-server.example.com/ws?token=%s&name=%s&platform=android&state=1"
         // 每次循环 onOpen 最长等多久,超了算 fail
         private const val CONNECT_TIMEOUT_MS = 30_000L
         // 每 N 次打一次内存快照
@@ -64,11 +64,13 @@ class StressReconnectTestActivity : AppCompatActivity() {
         // 压测可能 1h+,屏幕亮着方便看进度;真正长时间用 adb keepalive 或 wakelock 更稳
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // 用最朴素的引擎:固定 60s 心跳, 没有 surveillance、没有 autoConnect — 只测 SDK 本体的 engineOn/Off 路径。
+        // 最朴素的引擎:固定 60s 心跳, 不接 surveillance — 只测 SDK 本体的 engineOn/Off 路径。
+        // autoConnect 改为必填后这里也得注入一个最小的;不接 surveillance 让退避走纯指数,
+        // 跟"压测 engineOn/Off"语义一致(我们不希望网络层判断打扰节奏)。
         // 持久化缓存挂在私有目录文件,跑完看是否泄漏文件句柄。
         engine = V2JavaWebEngine.Builder()
-            .setIMCLog(TimberIMCLog("Stress"))
             .addHeartbeatMode(0, V2FixedHeartbeat.Builder().setCurHeartbeat(60).build())
+            .setAutoConnect(ProgressiveAutoConnect.Builder().build())
             .setMessageCache(
                 org.daimhim.imc_core.FileMessageCache(File(filesDir, "stress_msg_cache.bin"))
             )
@@ -320,6 +322,7 @@ class StressReconnectTestActivity : AppCompatActivity() {
     )
 }
 
-// 默认 token / name 不写源码,运行时从 Intent extras 或 EditText 输入
-private const val DEFAULT_TOKEN = ""
+// 默认留空 —— 运行时粘贴 JWT/账号或走 Intent extras 注入;切勿把真实 token/账号硬编码提交。
+private const val DEFAULT_TOKEN =
+    ""
 private const val DEFAULT_NAME = ""
