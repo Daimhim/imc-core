@@ -1,5 +1,10 @@
 jdk:
   - openjdk11
 
+# services.gradle.org / 腾讯镜像对 JitPack 机房均不可达(2026-08 实测),
+# 改用 SDKMan(JitPack 官方 init 步骤,CDN 必达)安装 gradle,绕开 wrapper 下载。
 install:
-  - ./gradlew :imc-core:publishReleaseJarPublicationToMavenLocal
+  - sdk install gradle 7.6.6 || true
+  - sdk use gradle 7.6.6 || true
+  - gradle --version
+  - gradle :imc-core:publishReleaseJarPublicationToMavenLocal --no-daemon
