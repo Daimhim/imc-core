@@ -517,13 +517,18 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      *
      * webSocketClient 在 autoConnect 驱动重连期间会被 [handleAfterClose] 置空,
      * 那时不能只 `webSocketClient?.` 一句带过(会变 no-op),要直接戳 autoConnect。
+     *
+     * ⚠ 连接健康(isOpen)时**不能**走 client.resetStartAutoConnect()——它会
+     * stopConnectionLostTimer 而 autoConnect 并不会真的重连(连接没断),心跳计时器
+     * 被停后再无人重挂,连接静默到被服务端空闲踢。典型触发:App 冷启动网络监控的
+     * 初始回调 onNetworkChange → kickReconnect。健康时只重置退避计数即可。
      */
     private fun kickReconnect() {
         val client = webSocketClient
-        if (client != null) {
-            client.resetStartAutoConnect()
-        } else {
-            autoConnect.resetStartAutoConnect()
+        when {
+            client == null -> autoConnect.resetStartAutoConnect()
+            !client.isOpen -> client.resetStartAutoConnect()   // 半开/未连:停心跳 + 催重连(历史行为)
+            else -> autoConnect.resetStartAutoConnect()        // 健康:不动心跳,只重置退避计数
         }
     }
 
