@@ -217,6 +217,8 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
         }
         val action: Action = synchronized(sync) {
             when {
+                // NONE:只发不判死 —— 服务器收心跳续命但不回 ack 时,避免周期性误杀
+                livenessSource == LivenessSource.NONE -> Action.RESET_AND_CONTINUE
                 hasPongBeenReceived -> Action.RESET_AND_CONTINUE
                 !isInToleranceWindow -> Action.ENTER_TOLERANCE
                 else -> Action.FAIL
@@ -267,6 +269,20 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
 
         /** 仅 WS pong 控制帧算活;可与 customHeartbeat 并存(ping 判活 + JSON 心跳保业务) */
         WS_PONG_ONLY,
+
+        /**
+         * 不判活,心跳只管发送(服务器"收心跳续命但不回 ack"时使用)。
+         *
+         * 背景:实测有服务端把 WS ping / JSON 心跳都计入空闲流量刷新(连接因此长活),
+         * 却不回任何 pong/ack —— 此时 ANY_INBOUND 与 WS_PONG_ONLY 都会在安静账号上
+         * 周期性误杀健康连接。NONE 把"心跳"退化成纯 keepalive 发送器:每周期发心跳
+         * 并重排计时器,永不 ENTER_TOLERANCE / FAIL。断连检测交给 socket onError /
+         * autoConnect(网络切换、TCP RST 等绝大多数场景都会触发 onError)。
+         *
+         * 代价:纯静默黑洞(TCP 半开且无任何 IO 错误)不再被主动判死,恢复依赖下一次
+         * write 失败或网络层信号;可配合 NetSurveillance 的 NetworkCallback 兜底。
+         */
+        NONE,
     }
 
     private companion object {

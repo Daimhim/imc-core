@@ -134,6 +134,44 @@ class HeartbeatPongAndGuardTest {
     private inline fun <reified T : ImcEvent> collected(): List<T> =
         events.filterIsInstance<T>()
 
+    // ── 集成:NONE 只发不判死(服务器收心跳续命但不回 ack 的形态) ────────
+
+    @Test
+    fun noneLiveness_neverFails_keepsSending() {
+        val port = findFreePort()
+        val server = PingSwallowServer(port).apply { start() }   // 吞 ping 不回,最严苛
+        try {
+            assertTrue("test server start timeout", server.startLatch.await(3, TimeUnit.SECONDS))
+            val engine = buildEngine(
+                V2FixedHeartbeat.Builder()
+                    .setCurHeartbeat(1)
+                    .setToleranceFactor(2.0)
+                    .setCustomHeartbeat(StringPingCustomHeartbeat())
+                    .setLivenessSource(V2FixedHeartbeat.LivenessSource.NONE)
+                    .build()
+            )
+            Thread { engine.engineOn("ws://localhost:$port") }.start()
+            Thread.sleep(4500)
+            engine.engineOff()
+
+            val sent = collected<ImcEvent.HeartbeatSent>()
+            assertTrue(
+                "NONE 模式心跳应持续发送(实际 ${sent.size} 次)",
+                sent.size >= 3
+            )
+            assertTrue(
+                "NONE 模式不应进容差窗口",
+                collected<ImcEvent.HeartbeatDegraded>().isEmpty()
+            )
+            assertTrue(
+                "NONE 模式不应判死",
+                collected<ImcEvent.HeartbeatFailed>().isEmpty()
+            )
+        } finally {
+            try { server.stop(500) } catch (_: Exception) {}
+        }
+    }
+
     // ── 集成:server 正常回 pong,WS_PONG_ONLY 判活成立 ───────────────────
 
     @Test
