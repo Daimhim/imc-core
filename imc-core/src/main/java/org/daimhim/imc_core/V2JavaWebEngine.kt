@@ -729,19 +729,20 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
         fun onChangeMode(linkNative: ILinkNative) {
             val previous = this.linkNative
-            if (previous !== linkNative) {
-                this.linkNative = linkNative
-                linkNative.initLinkNative(this)
-                // RC2 修复:必须先停「旧档位」的计时器再启动新的。
-                // 历史代码先换 this.linkNative 再 stopConnectionLostTimerEx(),停的是
-                // 新档位 → 旧档位计时器漏网成僵尸,双计时器并行(线上 30s/45s 交替发);
-                // 僵尸 tick 在无入站流量时走容差→FAIL,误杀健康连接。
-                // 旧档位此刻 owner 仍是本 client,守卫放行。
-                if (previous != null) {
-                    val prevOwner = previous.currentAttachedClient()
-                    if (prevOwner == null || prevOwner === this) {
-                        previous.stopConnectionLostTimer()
-                    }
+            this.linkNative = linkNative
+            // 无条件 init:initLinkNative 幂等(同 client 早退);换代(spawn 重连后同一
+            // ILinkNative 实例挂到新 client)时把 owner 换到本 client 并强杀陈旧计时器,
+            // 这是 RC1/RC3 守卫生效的前提 —— 不能只在 previous !== linkNative 时才 init。
+            linkNative.initLinkNative(this)
+            // RC2 修复:必须先停「旧档位」的计时器再启动新的。
+            // 历史代码先换 this.linkNative 再 stopConnectionLostTimerEx(),停的是
+            // 新档位 → 旧档位计时器漏网成僵尸,双计时器并行(线上 30s/45s 交替发);
+            // 僵尸 tick 在无入站流量时走容差→FAIL,误杀健康连接。
+            // 旧档位此刻 owner 仍是本 client,守卫放行。
+            if (previous != null && previous !== linkNative) {
+                val prevOwner = previous.currentAttachedClient()
+                if (prevOwner == null || prevOwner === this) {
+                    previous.stopConnectionLostTimer()
                 }
             }
             stopConnectionLostTimerEx()
