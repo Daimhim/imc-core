@@ -163,6 +163,32 @@ sealed class ImcEvent {
 
     data class HeartbeatPongReceived(
         val implName: String,
+        /**
+         * 判活信号来源:[CAUSE_PONG] = WS pong 控制帧(服务器在应答我们的 ping);
+         * [CAUSE_INBOUND] = 普通入站消息(任意入站也能证明连接活着)。
+         * 换 WS ping 心跳后,排查"服务器是否真的回 pong"直接看 cause 分布即可。
+         */
+        val cause: String = CAUSE_INBOUND,
+        override val timestamp: Long = System.currentTimeMillis(),
+    ) : ImcEvent() {
+        override val category get() = Category.HEARTBEAT
+
+        companion object {
+            const val CAUSE_PONG = "pong"
+            const val CAUSE_INBOUND = "inbound"
+        }
+    }
+
+    /**
+     * 心跳 tick / 发送因非健康状态被跳过(如 ws 未 open、client 已换代)。
+     *
+     * 修复前这些早退完全静默 — 线上大量会话 sent=0 却看不到任何心跳侧事件,
+     * 排查只能靠猜。本事件让"A13 早退"可见,频率天然受控
+     * (onTimerTick 早退后不再重排计时器,同一连接最多 emit 一次)。
+     */
+    data class HeartbeatTickSkipped(
+        val implName: String,
+        val reason: String,
         override val timestamp: Long = System.currentTimeMillis(),
     ) : ImcEvent() {
         override val category get() = Category.HEARTBEAT

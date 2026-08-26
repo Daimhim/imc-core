@@ -583,6 +583,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 return
             }
             retryingSendingCache()
+            // RC1 修复:连接真正建立时强制重挂计时器(先停后启)。
+            // spawn 时 onChangeMode 已 start 过一次,但起点是 spawn 时刻;握手若耗时
+            // (弱网下 P50 319ms、max 23s),首 tick 会提前踩进来。此处重挂把计时
+            // 起点对齐 onOpen,并顺带冲掉任何陈旧状态。守卫此时 owner===this,放行。
+            stopConnectionLostTimerEx()
             startConnectionLostTimerEx()
             linkNative?.updateLastPong()
             stopAutoConnect()
@@ -716,13 +721,29 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
         override fun onWebsocketPong(conn: WebSocket?, f: Framedata?) {
             retryingSendingCache()
-            linkNative?.updateLastPong()
+            // 走 onWsPong(而非 updateLastPong):让心跳实现能区分「pong 控制帧」
+            // 与「普通入站消息」,WS_PONG_ONLY 判活与 cause=PONG 观测都依赖这个区分
+            linkNative?.onWsPong()
             super.onWebsocketPong(conn, f)
         }
 
         fun onChangeMode(linkNative: ILinkNative) {
-            this.linkNative = linkNative
-            linkNative.initLinkNative(this)
+            val previous = this.linkNative
+            if (previous !== linkNative) {
+                this.linkNative = linkNative
+                linkNative.initLinkNative(this)
+                // RC2 修复:必须先停「旧档位」的计时器再启动新的。
+                // 历史代码先换 this.linkNative 再 stopConnectionLostTimerEx(),停的是
+                // 新档位 → 旧档位计时器漏网成僵尸,双计时器并行(线上 30s/45s 交替发);
+                // 僵尸 tick 在无入站流量时走容差→FAIL,误杀健康连接。
+                // 旧档位此刻 owner 仍是本 client,守卫放行。
+                if (previous != null) {
+                    val prevOwner = previous.currentAttachedClient()
+                    if (prevOwner == null || prevOwner === this) {
+                        previous.stopConnectionLostTimer()
+                    }
+                }
+            }
             stopConnectionLostTimerEx()
             startConnectionLostTimerEx()
             if (!isOpen) return
@@ -740,7 +761,14 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
 
         fun stopConnectionLostTimerEx(isError: Boolean = false) {
-            linkNative?.stopConnectionLostTimer(isError)
+            val ln = linkNative ?: return
+            // RC3 代际守卫:同一个 ILinkNative 实例跨 client 世代共享时,
+            // 旧 client 迟到的 onClose/onError 不能停掉新 client 刚挂的计时器 —
+            // 否则新会话从此无心跳(线上 sent=0 会话的另一根因,EngineKeyChanged
+            // 切换路径高发)。owner 为 null(实现未适配代际)时退化为历史行为。
+            val owner = ln.currentAttachedClient()
+            if (owner != null && owner !== this) return
+            ln.stopConnectionLostTimer(isError)
         }
 
         // ── 抢救层 ───────────────────────────────────────────────────
