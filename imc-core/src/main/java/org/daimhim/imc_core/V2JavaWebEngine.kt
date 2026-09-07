@@ -522,6 +522,9 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      * stopConnectionLostTimer 而 autoConnect 并不会真的重连(连接没断),心跳计时器
      * 被停后再无人重挂,连接静默到被服务端空闲踢。典型触发:App 冷启动网络监控的
      * 初始回调 onNetworkChange → kickReconnect。健康时只重置退避计数即可。
+     *
+     * 等待重连期间的 reset 语义见 ProgressiveAutoConnect.resetStartAutoConnect:压缩 pending
+     * 定时器到 IMMEDIATE(带 500ms 去抖),不再重排满退避、也不会被连环 poke 推迟 fire。
      */
     private fun kickReconnect() {
         val client = webSocketClient
@@ -944,6 +947,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
          * 默认 [InMemoryMessageCache](64KB + 5s TTL),纯内存。
          * 想要进程重建后继续重放就用 [FileMessageCache];Android 想存到 SP
          * 可参考 demo 模块的 `SharedPrefsMessageCache`。
+         *
+         * ⚠ 业务消息**不要**依赖这层缓存:引擎在 onOpen 时先 flush 缓存、再通知业务重发
+         * (messageReissue/补发任务)。同一条业务消息若既进过引擎缓存又在业务等待回执表里,
+         * 会被双发。缓存层只适合心跳类幂等 payload(现状:QGBHeartbeat);业务消息应像
+         * SendOrderTask 那样在未连接时拦截排队,由业务自己的补发链路保证发送语义。
          */
         fun setMessageCache(cache: IMessageCache) = apply { this.messageCache = cache }
 

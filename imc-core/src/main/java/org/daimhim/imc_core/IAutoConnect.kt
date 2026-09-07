@@ -137,6 +137,21 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
          * 10s 内拿不到 TLS 响应基本就是真的黑洞了,早点切下一轮节电更划算。
          */
         const val DEGRADED_ATTEMPT_TIMEOUT_MS = 10_000L
+
+        /**
+         * reset-kick 去抖窗口:等待下次重连期间,外部 poke(kickReconnect → resetStartAutoConnect)
+         * 在该窗口内的重复调用只压缩一次定时器,防止网络回调风暴连环推后 fire 时刻。
+         */
+        private const val RESET_KICK_DEBOUNCE_MS = 500L
+
+        /** flapping 判定的短命会话阈值:会话在线不足 30s 记一次短命 */
+        private const val SHORT_SESSION_THRESHOLD_MS = 30_000L
+
+        /** 连续短命会话达到该次数后进入 flapping 退避(重连基数抬升) */
+        private const val FLAPPING_STREAK_THRESHOLD = 5
+
+        /** flapping 退避的重连基数封顶 */
+        private const val FLAPPING_MAX_DELAY_MS = 15_000L
     }
 
     private val syncConnectionLost = Any()
@@ -209,6 +224,24 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
      */
     @Volatile private var consecutiveImmediateRetries: Int = 0
     private val maxImmediateRetries: Int = builder.maxImmediateRetries
+
+    /** reset-kick 最近一次压缩 pending 定时器的时刻(去抖用,见 [resetStartAutoConnect]) */
+    @Volatile private var lastResetKickTs: Long = 0L
+
+    // ── flapping 退避(连续短命会话) ─────────────────────────────────────
+    //
+    // 每次连接成功(stopAutoConnect,onOpen 路径)都会把指数退避清回 init —— 服务端连环踢
+    // (LB 回收 / 顶号)时客户端会以固定 2s 间隔永久重连(09-05 实测一天 43 断 46 连,每次
+    // delay=2000ms)。这里对"连得上但活不长(<30s)"单独记账:
+    //  - 连续 [FLAPPING_STREAK_THRESHOLD] 个短命会话后,重连基数不再从 init 起步,按 streak
+    //    指数抬升,封顶 [FLAPPING_MAX_DELAY_MS](2s/4s/8s/15s)
+    //  - 任何一个存活 >= 30s 的会话死亡时清零
+    //  - 只有"建立后的第一次 abnormal"才记账,连接尝试失败的 abnormal 不参与(那走正常指数退避)
+    // lastEstablishedTs 近似取上次 stopAutoConnect 时刻(≈ onOpen 成功);WAIT_USER 等
+    // 无连接的 stop 路径也会刷新它,精度足够 — 该信号本来就是统计性的。
+    @Volatile private var shortSessionStreak: Int = 0
+    @Volatile private var lastEstablishedTs: Long = 0L
+    @Volatile private var flapAccounted: Boolean = true
 
     /**
      * A7: 连续 attempt-timeout 计数 + 最近一次 probe 是否 TLS_FAILURE/PROBE_TIMEOUT。
@@ -421,6 +454,23 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     }
 
     override fun abnormalDisconnectionAndAutomaticReconnection() {
+        // flapping 记账:只结算"建立后的第一次 abnormal"(连接尝试失败不走这里重记),
+        // 短命(<30s)累计、健康会话清零
+        var streakAfterAccounting = -1
+        if (!flapAccounted) {
+            synchronized(syncConnectionLost) {
+                if (!flapAccounted) {
+                    flapAccounted = true
+                    val upMs = System.currentTimeMillis() - lastEstablishedTs
+                    if (upMs >= 0 && upMs < SHORT_SESSION_THRESHOLD_MS) {
+                        shortSessionStreak++
+                    } else {
+                        shortSessionStreak = 0
+                    }
+                    streakAfterAccounting = shortSessionStreak
+                }
+            }
+        }
         val action = consultRecommend()
         // 编排层若判定要等用户介入(门户认证/被阻塞), 直接放弃自动抢救;
         // App 需要在用户解决问题后主动调 makeConnection() / resetStartAutoConnect()
@@ -447,6 +497,20 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         // 上一次 attempt 已经回归(收到了 onError/onClose),attempt watchdog 完成了使命,撤掉
         // 否则 30s 兜底会在新一轮 attempt 没起来时误开火
         attemptWatchdog.unregister(attemptWatchdogId)
+        // flapping:连续短命会话后抬升重连基数。waitingNext 的退避分支会 ×2,所以这里预置
+        // base/2,使首个调度恰好落在 base 上;后续连续失败仍按正常指数退避继续翻倍。
+        // 注意:surveillance 推 IMMEDIATE/FAILOVER(判定网络恢复)时优先于 flapping,基数会被
+        // 压回 init —— 编排层的"网络健康"是更强的信号。
+        if (shortSessionStreak >= FLAPPING_STREAK_THRESHOLD) {
+            val base = flappingBaseDelayMs()
+            synchronized(syncConnectionLost) {
+                if (reconnectDelay < base) reconnectDelay = base / 2
+            }
+            if (streakAfterAccounting == FLAPPING_STREAK_THRESHOLD) {
+                // 刚跨过阈值那一刻留一条观测,之后不再刷屏
+                ImcEvents.emit(ImcEvent.AutoConnectAborted("flapping:streak=$shortSessionStreak"))
+            }
+        }
         // 初次还是多次
         if (isAutomaticallyConnecting) {
             // 连接已经过了
@@ -458,8 +522,60 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     }
 
     override fun resetStartAutoConnect() {
-        stopAutoConnect()
-        startAutoConnect()
+        // 修复:历史实现 = stopAutoConnect() + startAutoConnect(),会把 pending 的重连定时器
+        // 重排满一轮退避(首排 2000ms) —— 等待期间每次外部 poke(engine.send 未连接时
+        // makeConnection → kickReconnect、onNetworkChange)都触发本调用,poke 越多重连反而
+        // 越晚(日志实测 400ms 内 4 次连环 reset,fire 被推迟 >1s;极端下重连可被无限推迟)。
+        //
+        // 新语义(与 V2JavaWebEngine.kickReconnect 的"立即催"注释对齐):
+        //  - 等待下次重连中 → 把 pending 定时器**压缩**到 IMMEDIATE_DELAY_MS;已经是
+        //    IMMEDIATE 则 no-op(重复重挂 1s 定时器同样会推后 fire),[RESET_KICK_DEBOUNCE_MS]
+        //    内的重复 poke 忽略
+        //  - attempt 在飞    → no-op,让本轮握手自然回归
+        //  - 没有抢救在跑    → 保持历史行为 stop + start
+        val COMPRESS = 1
+        val NOOP = 2
+        val LEGACY_START = 3
+        var prevDelay = 0L
+        val decision = synchronized(syncConnectionLost) {
+            when {
+                isWaitingNextAutomaticConnection -> {
+                    val now = System.currentTimeMillis()
+                    if (lastScheduledDelay > IMMEDIATE_DELAY_MS &&
+                        now - lastResetKickTs >= RESET_KICK_DEBOUNCE_MS
+                    ) {
+                        lastResetKickTs = now
+                        prevDelay = lastScheduledDelay
+                        timeoutScheduler.stop()
+                        timeoutScheduler.start(IMMEDIATE_DELAY_MS)
+                        lastScheduledDelay = IMMEDIATE_DELAY_MS
+                        COMPRESS
+                    } else {
+                        NOOP
+                    }
+                }
+                isConnectingAutomatically || isAutomaticallyConnecting -> NOOP
+                else -> LEGACY_START
+            }
+        }
+        when (decision) {
+            COMPRESS -> {
+                // 锁外 emit(项目约定:sink 卡顿不能反压调度线程)
+                ImcEvents.emit(ImcEvent.AutoConnectAborted("reset-kick:${prevDelay}ms->$IMMEDIATE_DELAY_MS"))
+                ImcEvents.emit(
+                    ImcEvent.AutoConnectScheduled(
+                        delayMs = IMMEDIATE_DELAY_MS,
+                        action = lastEffectiveAction,
+                        retryCount = retryCount,
+                    )
+                )
+            }
+            LEGACY_START -> {
+                stopAutoConnect()
+                startAutoConnect()
+            }
+            else -> Unit
+        }
     }
 
     override fun startAutoConnect(){
@@ -503,6 +619,10 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             lastAction = null
             lastEffectiveAction = null
             lastScheduledDelay = initReconnectDelay
+            // flapping 记账:这次 stop 大概率是 onOpen 成功 → 会话建立时刻。刻意不清
+            // shortSessionStreak —— 它就是要扛住"成功即清零"的退避重置(在会话死亡时结算)。
+            lastEstablishedTs = System.currentTimeMillis()
+            flapAccounted = false
             timeoutScheduler.stop()
             active
         }
@@ -753,6 +873,12 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         if (rawAction != ReconnectAction.IMMEDIATE) return rawAction
         if (consecutiveImmediateRetries < maxImmediateRetries) return rawAction
         return ReconnectAction.BACKOFF_NORMAL
+    }
+
+    /** flapping 退避的重连基数:streak 每多 1 次翻一档(2s/4s/8s/16s),封顶 [FLAPPING_MAX_DELAY_MS] */
+    private fun flappingBaseDelayMs(): Long {
+        val shift = (shortSessionStreak - FLAPPING_STREAK_THRESHOLD + 1).coerceIn(1, 4)
+        return minOf(initReconnectDelay shl shift, FLAPPING_MAX_DELAY_MS)
     }
 
     /** 返回当前抢救状态快照,只读,可安全在任意线程调用(包括 UI 线程) */
