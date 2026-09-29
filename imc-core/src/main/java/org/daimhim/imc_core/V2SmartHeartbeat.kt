@@ -63,6 +63,9 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
     private var customHeartbeat : CustomHeartbeat? = builder.customHeartbeat
 
     private var determineMaximumHeartbeat  = false
+
+    // #9: 跨线程读写(onOpen/onClose 线程 vs 计时器线程),必须保证可见性
+    @Volatile
     private var webSocketClient : V2JavaWebEngine.WebSocketClientImpl? = null
 
     /**
@@ -98,7 +101,7 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
     }
     private val timeoutCall = object : Callable<Void> {
         override fun call(): Void? {
-            onHeartbeatFailure()
+            onHeartbeatTick()
             return null
         }
     }
@@ -155,10 +158,13 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
             isRunning = false
             hasPongBeenReceived = false
             timeoutScheduler.stop()
-            if (isError){
-                onHeartbeatFailure(true)
-            }
         }
+        // #3 双计数:这里不再调 onHeartbeatFailure。连接错误(onClose/onError)意味着
+        // 连接已经死了,不是「漏了一次心跳」;记一次会让 close() → onClose →
+        // stopConnectionLostTimer(true) 再加一 —— 一次抖动计 2 次,
+        // MAX_HEARTBEAT_FAILURE=5 实际 3 次就触发。连接死亡只做 NAT 生命周期自适应。
+        // 另:#2 —— 原实现在持 sync 锁时调 onHeartbeatFailure,里面 emit + 发帧 +
+        // 重排计时器,sink 卡顿会反压到 onClose 线程。现在这里只动状态,不再嵌套。
         if (lifetimeSec >= NAT_DETECT_MIN_LIFETIME_SECONDS) {
             maybeAdaptToNatIdle(lifetimeSec)
         }
@@ -190,57 +196,99 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
         }
     }
 
+    /** 计时器到期时的动作 */
+    private sealed class TickAction {
+        /** 判活成功:发心跳 + 按 intervalMs 重排 */
+        data class Continue(val intervalMs: Long) : TickAction()
+
+        /** 这个周期没等到判活信号 */
+        data class Miss(val consecutive: Int, val intervalMs: Long, val shouldClose: Boolean) : TickAction()
+    }
+
     /**
-     * 心跳失败回调
+     * 计时器到期 —— 走一次判活,决定续期还是记 miss。
+     *
+     * #2:状态机整段在 sync 内跑,只产出 [TickAction];emit / 发帧 / 重排计时器
+     * 一律放锁外,避免 sink 卡顿反压调度线程。
+     *
+     * #3/N2:只有本路径记 miss(连接错误不再记,见 stopConnectionLostTimer)。
+     * 连续 miss 超过 [MAX_HEARTBEAT_FAILURE] 才 close —— 修复 N2:
+     * 此前第一次 miss 就 close,阈值只管调心跳间隔、不管重连,一次抖动就掐线。
+     * 阈值现在同时管住「反 NAT 的缩间隔」与「放弃本连接」,语义与
+     * [Builder.setMaxHeartbeatFailure] 的名字一致。
      */
-    private fun onHeartbeatFailure(isError:Boolean = false){
-        // 心跳成功
-        if (hasPongBeenReceived && webSocketClient?.isOpen == true){
-            if (!isStartDetect){ //未稳定
-                curHearSuccess++ // 累计增加心跳成功一次
-                if (curHearSuccess > MAX_HEARTBEAT_SUCCESS){
-                    // 心跳成功次数超过3次
-                    isStartDetect = true // 开始心跳探测
+    private fun onHeartbeatTick() {
+        // #1: 迟到 tick 不得复活已停的计时器(见 V2FixedHeartbeat.onTimerTick 同款注释)。
+        if (!synchronized(sync) { isRunning }) return
+
+        val action: TickAction = synchronized(sync) {
+            if (hasPongBeenReceived && webSocketClient?.isOpen == true) {
+                // 心跳成功
+                if (!isStartDetect) { // 未稳定
+                    curHearSuccess++ // 累计增加心跳成功一次
+                    if (curHearSuccess > MAX_HEARTBEAT_SUCCESS) {
+                        // 心跳成功次数超过 3 次
+                        isStartDetect = true // 开始心跳探测
+                    }
+                } else {
+                    // 增加心跳间隔
+                    if (!determineMaximumHeartbeat) {
+                        curHeartbeat += heartbeatStep // 心跳间隔增加
+                        curHearFailure = 0 // 重置心跳失败次数
+                        curHearSuccess = 0 // 重置心跳成功
+                    }
                 }
-            }
-            else{
-                // 增加心跳间隔
-                if (!determineMaximumHeartbeat){
-                    curHeartbeat += heartbeatStep // 心跳间隔增加
-                    curHearFailure = 0 // 重置心跳失败次数
-                    curHearSuccess = 0 // 重置心跳成功
+                hasPongBeenReceived = false // 重置心跳成功
+                TickAction.Continue(curHeartbeat)
+            } else {
+                // 心跳失败
+                curHearFailure++ // 累计增加心跳失败一次
+                // 先取快照:下面「缩间隔」分支会把 curHearFailure 归零,
+                // shouldClose / consecutive 必须用归零前的值
+                val missCount = curHearFailure
+                val reachedLimit = missCount > MAX_HEARTBEAT_FAILURE
+                if (reachedLimit) {
+                    if (curHeartbeat > minHeartbeat) {
+                        curHeartbeat -= heartbeatStep // 减少心跳间隔
+                        curHearFailure = 0 // 重置心跳失败次数
+                        curHearSuccess = 0 // 重置心跳成功
+                    }
+                    determineMaximumHeartbeat = true
+                } else {
+                    determineMaximumHeartbeat = false
                 }
+                TickAction.Miss(
+                    consecutive = missCount,
+                    intervalMs = curHeartbeat,
+                    shouldClose = reachedLimit,
+                )
             }
-            hasPongBeenReceived = false // 重置心跳成功
-            sendHeartbeat() // 发送心跳
-            timeoutScheduler.start(curHeartbeat * 1000) // 开始下一次心跳计时
-            return
         }
-        // 心跳失败
-        curHearFailure++ // 累计增加心跳失败一次
-        if (curHearFailure > MAX_HEARTBEAT_FAILURE){
-            // 心跳失败次数超过5次
-            if (curHeartbeat > minHeartbeat){
-                curHeartbeat -= heartbeatStep // 减少心跳间隔
-                curHearFailure = 0 // 重置心跳失败次数
-                curHearSuccess = 0 // 重置心跳成功
+
+        // ── 以下一律锁外:emit / 发帧 / 重排 / close ──
+        when (action) {
+            is TickAction.Continue -> {
+                sendHeartbeat() // 发送心跳
+                timeoutScheduler.start(action.intervalMs * 1000) // 开始下一次心跳计时
             }
-            determineMaximumHeartbeat = true // 确定最大心跳间隔
-        }else{
-            // 心跳失败次数小于5次
-            determineMaximumHeartbeat = false // 确定最大心跳间隔
+            is TickAction.Miss -> {
+                ImcEvents.emit(ImcEvent.HeartbeatFailed(IMPL_NAME, consecutive = action.consecutive))
+                if (!action.shouldClose) {
+                    // N2:未到阈值不放弃本连接 —— 必须继续排程。
+                    // 原实现失败分支不重排(靠 close() 收场);现在不 close 了,
+                    // 若仍不重排,第一次 miss 就会让心跳永久停摆。
+                    timeoutScheduler.start(action.intervalMs * 1000)
+                    return
+                }
+                // N2:只有连续 miss 超阈值才放弃本连接。
+                // 必须强 close 才能真正触发重连:计时器超时不代表 TCP 断,socket 通常仍 isOpen=true,
+                // 调 startAutoConnect 会被 ProgressiveAutoConnect 的 isOpen 早返回挡掉,变成软告警(看到日志
+                // "触发重连"但没有 [AUTOCONNECT scheduled])。
+                // close() 走 onClose / onError → abnormalDisconnectionAndAutomaticReconnection → autoConnect
+                // 自然接管,退避状态由 autoConnect 自己维护,不会被打回起点。
+                webSocketClient?.close()
+            }
         }
-        ImcEvents.emit(ImcEvent.HeartbeatFailed(IMPL_NAME, consecutive = curHearFailure))
-        // 唤起重新链接,其内部会调用停止心跳
-        if (isError){
-            return
-        }
-        // 必须强 close 才能真正触发重连:容差窗口超时不代表 TCP 断,socket 通常仍 isOpen=true,
-        // 调 startAutoConnect 会被 ProgressiveAutoConnect 的 isOpen 早返回挡掉,变成软告警(看到日志
-        // "触发重连"但没有 [AUTOCONNECT scheduled])。
-        // close() 走 onClose / onError → abnormalDisconnectionAndAutomaticReconnection → autoConnect
-        // 自然接管,退避状态由 autoConnect 自己维护,不会被打回起点。
-        webSocketClient?.close()
     }
 
     private companion object {

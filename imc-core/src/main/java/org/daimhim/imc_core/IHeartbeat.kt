@@ -55,10 +55,21 @@ internal class RRFTimeoutScheduler : ITimeoutScheduler{
     private val timingTag = "${RRFTimeoutScheduler::class.java.simpleName}_${hashCode()}"
     private var isStop = false
     private val sync = Any()
-    private val timeoutCallback = fun(id:String){
+
+    /**
+     * 排程代际。每次 start/stop 递增;回调闭包捕获自己那一代。
+     *
+     * #1 TOCTOU:timeoutCallback 的 isStop 检查在锁内、call 在锁外,中间 stop()
+     * 可插入 —— 迟到 tick 仍会 fire。而两个心跳实现的 tick 尾部会重新 register,
+     * 于是「已停的调度器」被复活,下一轮 tick 在连接已死后照跑,走容差→FAIL 误关。
+     * 代际不匹配的回调直接丢弃,把这个窗口关死。
+     */
+    private var generation = 0L
+
+    private fun timeoutCallback(id: String, myGen: Long) {
         if (id != timingTag) return
-        synchronized(sync){
-            if (isStop) return
+        synchronized(sync) {
+            if (isStop || myGen != generation) return
         }
         call?.call()
     }
@@ -66,12 +77,14 @@ internal class RRFTimeoutScheduler : ITimeoutScheduler{
     override fun start(time: Long) {
         synchronized(sync){
             isStop = false
+            generation += 1
+            val myGen = generation
             // 关键:必须把调用方传入的 time 透传给 RRFv4,否则 register 会用默认 MAX_TIMEOUT_TIME=5s
             // 旧版漏传导致心跳/容差窗口实际都在 5s 触发,跟配置值无关
             rapidResponseForce.register(
                 id = timingTag,
                 timeoutMs = time,
-                onTimeout = timeoutCallback,
+                onTimeout = { id -> timeoutCallback(id, myGen) },
             )
         }
     }
@@ -80,6 +93,8 @@ internal class RRFTimeoutScheduler : ITimeoutScheduler{
         synchronized(sync){
             if (isStop) return
             isStop = true
+            // 代际推进:即便 RRFv4 的迟到回调已经派发出去,闭包里的 myGen 也不再匹配
+            generation += 1
             rapidResponseForce.unregister(id = timingTag)
         }
     }

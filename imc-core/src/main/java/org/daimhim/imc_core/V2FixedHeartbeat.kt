@@ -197,6 +197,9 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
 
     /** 计时器一次触发 — 走 2 阶段判定 */
     private fun onTimerTick() {
+        // #1: 迟到 tick 不得复活已停的计时器。RRFTimeoutScheduler 已有代际守卫,
+        // 这里再兜一层 —— 换成自定义 ITimeoutScheduler(无代际)时同样安全。
+        if (!synchronized(sync) { isRunning }) return
         // A13: WS 已断时不再续期 timer,避免 RRF 持续被无意义 reschedule。
         // 上层 stopConnectionLostTimer 会在毫秒级跟进,这里只是兜底。
         val ws = webSocketClient
