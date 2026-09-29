@@ -517,13 +517,21 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      *
      * webSocketClient 在 autoConnect 驱动重连期间会被 [handleAfterClose] 置空,
      * 那时不能只 `webSocketClient?.` 一句带过(会变 no-op),要直接戳 autoConnect。
+     *
+     * ⚠ 连接健康(isOpen)时**不能**走 client.resetStartAutoConnect()——它会
+     * stopConnectionLostTimer 而 autoConnect 并不会真的重连(连接没断),心跳计时器
+     * 被停后再无人重挂,连接静默到被服务端空闲踢。典型触发:App 冷启动网络监控的
+     * 初始回调 onNetworkChange → kickReconnect。健康时只重置退避计数即可。
+     *
+     * 等待重连期间的 reset 语义见 ProgressiveAutoConnect.resetStartAutoConnect:压缩 pending
+     * 定时器到 IMMEDIATE(带 500ms 去抖),不再重排满退避、也不会被连环 poke 推迟 fire。
      */
     private fun kickReconnect() {
         val client = webSocketClient
-        if (client != null) {
-            client.resetStartAutoConnect()
-        } else {
-            autoConnect.resetStartAutoConnect()
+        when {
+            client == null -> autoConnect.resetStartAutoConnect()
+            !client.isOpen -> client.resetStartAutoConnect()   // 半开/未连:停心跳 + 催重连(历史行为)
+            else -> autoConnect.resetStartAutoConnect()        // 健康:不动心跳,只重置退避计数
         }
     }
 
@@ -583,6 +591,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 return
             }
             retryingSendingCache()
+            // RC1 修复:连接真正建立时强制重挂计时器(先停后启)。
+            // spawn 时 onChangeMode 已 start 过一次,但起点是 spawn 时刻;握手若耗时
+            // (弱网下 P50 319ms、max 23s),首 tick 会提前踩进来。此处重挂把计时
+            // 起点对齐 onOpen,并顺带冲掉任何陈旧状态。守卫此时 owner===this,放行。
+            stopConnectionLostTimerEx()
             startConnectionLostTimerEx()
             linkNative?.updateLastPong()
             stopAutoConnect()
@@ -716,13 +729,30 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
         override fun onWebsocketPong(conn: WebSocket?, f: Framedata?) {
             retryingSendingCache()
-            linkNative?.updateLastPong()
+            // 走 onWsPong(而非 updateLastPong):让心跳实现能区分「pong 控制帧」
+            // 与「普通入站消息」,WS_PONG_ONLY 判活与 cause=PONG 观测都依赖这个区分
+            linkNative?.onWsPong()
             super.onWebsocketPong(conn, f)
         }
 
         fun onChangeMode(linkNative: ILinkNative) {
+            val previous = this.linkNative
             this.linkNative = linkNative
+            // 无条件 init:initLinkNative 幂等(同 client 早退);换代(spawn 重连后同一
+            // ILinkNative 实例挂到新 client)时把 owner 换到本 client 并强杀陈旧计时器,
+            // 这是 RC1/RC3 守卫生效的前提 —— 不能只在 previous !== linkNative 时才 init。
             linkNative.initLinkNative(this)
+            // RC2 修复:必须先停「旧档位」的计时器再启动新的。
+            // 历史代码先换 this.linkNative 再 stopConnectionLostTimerEx(),停的是
+            // 新档位 → 旧档位计时器漏网成僵尸,双计时器并行(线上 30s/45s 交替发);
+            // 僵尸 tick 在无入站流量时走容差→FAIL,误杀健康连接。
+            // 旧档位此刻 owner 仍是本 client,守卫放行。
+            if (previous != null && previous !== linkNative) {
+                val prevOwner = previous.currentAttachedClient()
+                if (prevOwner == null || prevOwner === this) {
+                    previous.stopConnectionLostTimer()
+                }
+            }
             stopConnectionLostTimerEx()
             startConnectionLostTimerEx()
             if (!isOpen) return
@@ -740,7 +770,14 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
 
         fun stopConnectionLostTimerEx(isError: Boolean = false) {
-            linkNative?.stopConnectionLostTimer(isError)
+            val ln = linkNative ?: return
+            // RC3 代际守卫:同一个 ILinkNative 实例跨 client 世代共享时,
+            // 旧 client 迟到的 onClose/onError 不能停掉新 client 刚挂的计时器 —
+            // 否则新会话从此无心跳(线上 sent=0 会话的另一根因,EngineKeyChanged
+            // 切换路径高发)。owner 为 null(实现未适配代际)时退化为历史行为。
+            val owner = ln.currentAttachedClient()
+            if (owner != null && owner !== this) return
+            ln.stopConnectionLostTimer(isError)
         }
 
         // ── 抢救层 ───────────────────────────────────────────────────
@@ -910,6 +947,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
          * 默认 [InMemoryMessageCache](64KB + 5s TTL),纯内存。
          * 想要进程重建后继续重放就用 [FileMessageCache];Android 想存到 SP
          * 可参考 demo 模块的 `SharedPrefsMessageCache`。
+         *
+         * ⚠ 业务消息**不要**依赖这层缓存:引擎在 onOpen 时先 flush 缓存、再通知业务重发
+         * (messageReissue/补发任务)。同一条业务消息若既进过引擎缓存又在业务等待回执表里,
+         * 会被双发。缓存层只适合心跳类幂等 payload(现状:QGBHeartbeat);业务消息应像
+         * SendOrderTask 那样在未连接时拦截排队,由业务自己的补发链路保证发送语义。
          */
         fun setMessageCache(cache: IMessageCache) = apply { this.messageCache = cache }
 

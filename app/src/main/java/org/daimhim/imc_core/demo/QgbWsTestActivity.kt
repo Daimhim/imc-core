@@ -392,6 +392,7 @@ class QgbWsTestActivity : AppCompatActivity() {
         if (etToken.text.isNullOrEmpty()) etToken.setText(DEFAULT_TOKEN)
         if (etAccount.text.isNullOrEmpty()) etAccount.setText(DEFAULT_NAME)
         refreshPreview()
+            etToken.post { findViewById<Button>(R.id.bt_connect).performClick() }
 
         findViewById<Button>(R.id.bt_connect).setOnClickListener {
             // 已在 OPEN / CONNECTING 时再点 CONNECT,V2JavaWebEngine.dispatchEngineOn 同 key 是 no-op,
@@ -533,7 +534,7 @@ class QgbWsTestActivity : AppCompatActivity() {
         if (intent?.getBooleanExtra("autoConnect", false) == true) {
             findViewById<TextView>(R.id.tv_engine_status).text = "AUTO-CONNECTING..."
             findViewById<Button>(R.id.bt_connect).post {
-                findViewById<Button>(R.id.bt_connect).performClick()
+                etToken.post { findViewById<Button>(R.id.bt_connect).performClick() }
             }
         }
     }

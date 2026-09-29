@@ -103,6 +103,8 @@ object ImcEventLogBridge {
                 "[$cat] heartbeat sent (${e.implName}, intvl=${e.intervalSeconds}s)"
             is ImcEvent.HeartbeatPongReceived ->
                 "[$cat] pong (${e.implName})"
+            is ImcEvent.HeartbeatTickSkipped ->
+                "[$cat] heartbeat tick skipped (${e.implName}, reason=${e.reason})"
             is ImcEvent.HeartbeatFailed ->
                 "[$cat] heartbeat FAILED (${e.implName}, consec=${e.consecutive})"
             is ImcEvent.HeartbeatModeChanged ->

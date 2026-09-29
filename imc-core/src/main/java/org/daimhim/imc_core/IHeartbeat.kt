@@ -22,6 +22,24 @@ interface ILinkNative{
 
     /** 同上的二进制版本。 */
     fun isIncomingHeartbeat(bytes: ByteArray): Boolean = false
+
+    /**
+     * 收到 WS 协议层 PONG 控制帧(RFC 6455 opcode=0x0A)时回调。
+     *
+     * 与 [updateLastPong] 的区别:updateLastPong 对任意入站帧都会被调(消息也算),
+     * 本方法**只有** pong 控制帧触发 — 心跳实现可借此区分"服务器在应答我的 ping"
+     * 与"普通业务流量"。默认转发 [updateLastPong],行为与加该方法前一致。
+     */
+    fun onWsPong() = updateLastPong()
+
+    /**
+     * 当前挂载的 client([initLinkNative] 最近一次传入者)。
+     *
+     * 引擎用它做「代际守卫」:同一个 ILinkNative 实例跨 client 世代共享时,
+     * 旧 client 迟到的 onClose/onError 不得停掉新 client 的计时器。
+     * 默认 null = 不参与守卫,引擎退化为历史行为(实现未适配时兼容)。
+     */
+    fun currentAttachedClient(): V2JavaWebEngine.WebSocketClientImpl? = null
 }
 
 /** 超时定时器抽象:[start] 计时、[stop] 取消、[setCallback] 设到点回调。默认实现 RRFTimeoutScheduler。 */

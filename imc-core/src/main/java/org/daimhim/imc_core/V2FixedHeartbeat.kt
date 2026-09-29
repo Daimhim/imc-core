@@ -45,6 +45,20 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
     /** 自定义心跳包内容 */
     private var customHeartbeat: CustomHeartbeat? = builder.customHeartbeat
 
+    /**
+     * 判活信号源。
+     *
+     * - [LivenessSource.ANY_INBOUND](默认,历史行为):任意入站帧都算活。适用于
+     *   customHeartbeat 且服务器不回 ack 的协议(靠业务流量顺带证明活着)——
+     *   缺点是安静账号(无推送)每个周期都会 no-pong 误判。
+     * - [LivenessSource.WS_PONG_ONLY]:仅 WS pong 控制帧算活。标准 ping/pong 模式,
+     *   可与 [customHeartbeat] 并存(ping 探活 + JSON 心跳继续承担服务端业务职责,
+     *   如在线状态上报)。
+     */
+    private val livenessSource: LivenessSource = builder.livenessSource
+
+    // 代际守卫跨线程读(onClose 线程 / 引擎线程),必须保证可见性
+    @Volatile
     private var webSocketClient: V2JavaWebEngine.WebSocketClientImpl? = null
 
     private val timeoutCall = object : Callable<Void> {
@@ -62,8 +76,23 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
 
     override fun initLinkNative(webSocketClient: V2JavaWebEngine.WebSocketClientImpl) {
         if (this.webSocketClient == webSocketClient) return
-        this.webSocketClient = webSocketClient
+        synchronized(sync) {
+            if (isRunning) {
+                // 陈旧计时器(旧 client 世代挂的残留):强制杀掉。
+                // RC1 修复:此前旧世代的 isRunning=true 会把新 client 的
+                // startConnectionLostTimer 直接 `if (isRunning) return` 拦掉,
+                // 新会话从此没有心跳(线上大量 sent=0 会话的根因)。
+                timeoutScheduler.stop()
+            }
+            isRunning = false
+            hasPongBeenReceived = false
+            isInToleranceWindow = false
+            this.webSocketClient = webSocketClient
+        }
     }
+
+    /** 代际守卫:告诉引擎本实例当前挂在哪个 client 上;旧 client 的迟到回调据此被拦。 */
+    override fun currentAttachedClient(): V2JavaWebEngine.WebSocketClientImpl? = webSocketClient
 
     /**
      * 返回给 Java-WebSocket 内部 LCD 的超时值。**固定 0 = 关掉 LCD**。
@@ -89,12 +118,24 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
         customHeartbeat?.isHeartbeat(bytes) == true
 
     override fun updateLastPong() {
+        // WS_PONG_ONLY 模式下普通入站不算判活信号(onOpen 时的初始调用同样忽略):
+        // 第一个周期会进一次容差并立刻发探活 ping,pong 回来即恢复 —— 这正好让
+        // "服务器是否真的回 pong"在事件流里可见(cause=PONG + RECOVERED_IN_TOLERANCE)。
+        if (livenessSource == LivenessSource.WS_PONG_ONLY) return
+        markAlive(ImcEvent.HeartbeatPongReceived.CAUSE_INBOUND)
+    }
+
+    override fun onWsPong() {
+        markAlive(ImcEvent.HeartbeatPongReceived.CAUSE_PONG)
+    }
+
+    private fun markAlive(cause: String) {
         val recoveredInTolerance: Boolean
         synchronized(sync) {
             hasPongBeenReceived = true
             recoveredInTolerance = isInToleranceWindow
         }
-        ImcEvents.emit(ImcEvent.HeartbeatPongReceived(IMPL_NAME))
+        ImcEvents.emit(ImcEvent.HeartbeatPongReceived(IMPL_NAME, cause))
         if (recoveredInTolerance) {
             ImcEvents.emit(
                 ImcEvent.HeartbeatDegraded(
@@ -130,17 +171,27 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
         // A13: WS 未连时静默早退。否则 webSocketClient.send/sendPing 会抛
         // WebsocketNotConnectedException → RRF onTimeout catch 上报为 INTERNAL noise。
         // 触发场景:onError/onClose 触达 stopConnectionLostTimer 之前的窗口里 RRF 恰好 fire。
-        val ws = webSocketClient ?: return
-        if (!ws.isOpen) return
-        ImcEvents.emit(ImcEvent.HeartbeatSent(IMPL_NAME, intervalSeconds = curHeartbeat))
-        if (customHeartbeat == null) {
-            ws.sendPing()
+        val ws = webSocketClient
+        if (ws == null) {
+            ImcEvents.emit(ImcEvent.HeartbeatTickSkipped(IMPL_NAME, "noClient"))
             return
         }
-        if (customHeartbeat?.byteOrString() == true) {
-            ws.send(customHeartbeat?.byteHeartbeat())
-        } else {
-            ws.send(customHeartbeat?.stringHeartbeat())
+        if (!ws.isOpen) {
+            ImcEvents.emit(ImcEvent.HeartbeatTickSkipped(IMPL_NAME, "notOpen"))
+            return
+        }
+        val payload = customHeartbeat
+        val sendWsPing = payload == null || livenessSource == LivenessSource.WS_PONG_ONLY
+        ImcEvents.emit(
+            ImcEvent.HeartbeatSent(IMPL_NAME, intervalSeconds = curHeartbeat)
+        )
+        if (sendWsPing) ws.sendPing()
+        if (payload != null) {
+            if (payload.byteOrString()) {
+                ws.send(payload.byteHeartbeat())
+            } else {
+                ws.send(payload.stringHeartbeat())
+            }
         }
     }
 
@@ -155,10 +206,19 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
                 hasPongBeenReceived = false
                 isInToleranceWindow = false
             }
+            // A13 早退不再静默:让"计时器因 ws 非开而死亡"在事件流里可见
+            ImcEvents.emit(
+                ImcEvent.HeartbeatTickSkipped(
+                    IMPL_NAME,
+                    if (ws == null) "tickNoClient" else "tickNotOpen"
+                )
+            )
             return
         }
         val action: Action = synchronized(sync) {
             when {
+                // NONE:只发不判死 —— 服务器收心跳续命但不回 ack 时,避免周期性误杀
+                livenessSource == LivenessSource.NONE -> Action.RESET_AND_CONTINUE
                 hasPongBeenReceived -> Action.RESET_AND_CONTINUE
                 !isInToleranceWindow -> Action.ENTER_TOLERANCE
                 else -> Action.FAIL
@@ -202,6 +262,29 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
 
     private enum class Action { RESET_AND_CONTINUE, ENTER_TOLERANCE, FAIL }
 
+    /** 判活信号源,见 [V2FixedHeartbeat.livenessSource] */
+    enum class LivenessSource {
+        /** 任意入站帧都算活(历史默认) */
+        ANY_INBOUND,
+
+        /** 仅 WS pong 控制帧算活;可与 customHeartbeat 并存(ping 判活 + JSON 心跳保业务) */
+        WS_PONG_ONLY,
+
+        /**
+         * 不判活,心跳只管发送(服务器"收心跳续命但不回 ack"时使用)。
+         *
+         * 背景:实测有服务端把 WS ping / JSON 心跳都计入空闲流量刷新(连接因此长活),
+         * 却不回任何 pong/ack —— 此时 ANY_INBOUND 与 WS_PONG_ONLY 都会在安静账号上
+         * 周期性误杀健康连接。NONE 把"心跳"退化成纯 keepalive 发送器:每周期发心跳
+         * 并重排计时器,永不 ENTER_TOLERANCE / FAIL。断连检测交给 socket onError /
+         * autoConnect(网络切换、TCP RST 等绝大多数场景都会触发 onError)。
+         *
+         * 代价:纯静默黑洞(TCP 半开且无任何 IO 错误)不再被主动判死,恢复依赖下一次
+         * write 失败或网络层信号;可配合 NetSurveillance 的 NetworkCallback 兜底。
+         */
+        NONE,
+    }
+
     private companion object {
         const val IMPL_NAME = "V2Fixed"
     }
@@ -215,9 +298,24 @@ class V2FixedHeartbeat(builder: Builder) : ILinkNative {
 
         internal var timeoutScheduler: ITimeoutScheduler = RRFTimeoutScheduler()
         internal var customHeartbeat: CustomHeartbeat? = null
+        internal var livenessSource: LivenessSource = LivenessSource.ANY_INBOUND
 
         fun setCustomHeartbeat(customHeartbeat: CustomHeartbeat): Builder {
             this.customHeartbeat = customHeartbeat
+            return this
+        }
+
+        /**
+         * 判活信号源。默认 [LivenessSource.ANY_INBOUND](历史行为,兼容)。
+         *
+         * 服务器对 WS ping 回 pong 的场景建议 [LivenessSource.WS_PONG_ONLY]:
+         *  - 不设 customHeartbeat → 纯 ping/pong 心跳;
+         *  - 设 customHeartbeat → 双轨:每周期发 WS ping(判活)+ 自定义 JSON(承担
+         *    服务端业务职责,如在线状态),适用于"服务器不回 JSON 心跳 ack 但有
+         *    app-layer 职责"的协议。
+         */
+        fun setLivenessSource(source: LivenessSource): Builder {
+            this.livenessSource = source
             return this
         }
 
