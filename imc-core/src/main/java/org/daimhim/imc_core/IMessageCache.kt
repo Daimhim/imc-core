@@ -218,6 +218,32 @@ class InMemoryMessageCache @JvmOverloads constructor(
  *              典型用法:App 重启或账号切换后,用新账号 ID 创建实例,旧账号残留自动清理。
  * @param maxBytes 字节上限,超出按 FIFO 淘汰,默认 64KB
  */
+/**
+ * 基于文件的消息缓存。
+ *
+ * ## 文件格式:追加日志(LOG_VERSION = 3)
+ *
+ * 早期实现每次 put / pollFirst / pushFirst / remove 都把整个队列全量重写进文件 ——
+ * 冲出 N 条要 O(N²) 写,且全程在锁内、跑在 WS 读线程上。现在改成 append-only log:
+ *
+ * ```
+ * header : MAGIC:int  LOG_VERSION:byte  OWNER:utf
+ * record : kind:byte  [payload]
+ *   REC_PUT        -> writeRecord(m)   追加到队尾
+ *   REC_PUSH_FIRST -> writeRecord(m)   插到队首
+ *   REC_REMOVE     -> id:utf           按 id 删一条(墓碑)
+ *   REC_CLEAR      -> (无)             清空
+ * ```
+ *
+ * 每次追加都 flush 到 OS,崩溃安全度与原来的「写完即 close」一致。
+ * 日志记录数明显超过队列长度时压实(重写一遍),避免文件被墓碑撑爆。
+ *
+ * v2 的整快照文件仍可读:读进来后压实成 v3,一次性迁移。
+ *
+ * 注:公共的 [encodeMessageCacheBlob] / [decodeMessageCacheBlob] 与
+ * SharedPrefsMessageCache 用的是 `VERSION` 那套**快照**格式,与本文件的追加日志
+ * 格式互不影响。
+ */
 class FileMessageCache @JvmOverloads constructor(
     private val file: File,
     private val owner: String? = null,
@@ -227,16 +253,42 @@ class FileMessageCache @JvmOverloads constructor(
     companion object {
         const val DEFAULT_MAX_BYTES = 64 * 1024
         internal const val MAGIC = 0x494D4343 // "IMCC"
-        /** v2: 加了 OWNER 字段;读到 v1 文件按 unsupported 重置(一次性丢失,可接受) */
+
+        /** 快照格式版本([encodeMessageCacheBlob] / SharedPrefsMessageCache 用) */
         internal const val VERSION: Byte = 2
+
+        /** 本实现的文件格式版本:追加日志 */
+        internal const val LOG_VERSION: Byte = 3
+
+        private const val REC_PUT: Byte = 1
+        private const val REC_PUSH_FIRST: Byte = 2
+        private const val REC_REMOVE: Byte = 3
+        private const val REC_CLEAR: Byte = 4
+
+        /** 压实阈值余量:日志记录数 > 队列长度 × 2 + 该值才重写 */
+        private const val COMPACT_SLACK = 64
     }
 
     private val lock = Any()
     private val queue = ArrayDeque<CachedMessage>()
     private var occupied: Int = 0
 
+    /** 已追加进文件的记录条数(含墓碑),只在 [lock] 内读写 */
+    private var logRecords: Int = 0
+
+    /** 文件是否还没写过 header(新文件 / 刚 clear 过) */
+    private var needsHeader: Boolean = true
+
     init {
         loadFromFile()
+    }
+
+    private fun resetAll() {
+        queue.clear()
+        occupied = 0
+        logRecords = 0
+        needsHeader = true
+        try { file.delete() } catch (_: Exception) {}
     }
 
     private fun loadFromFile() {
@@ -245,22 +297,58 @@ class FileMessageCache @JvmOverloads constructor(
             DataInputStream(file.inputStream().buffered()).use { dis ->
                 val magic = dis.readInt()
                 if (magic != MAGIC) {
-                    file.delete(); return
+                    resetAll(); return
                 }
                 val version = dis.readByte()
-                if (version != VERSION) {
-                    file.delete(); return
+                when (version) {
+                    // ── v2:整快照(旧格式),读进来后压实成 v3 ──
+                    VERSION -> {
+                        val storedOwner = dis.readUTF()
+                        if (owner != null && storedOwner != owner) {
+                            resetAll(); return
+                        }
+                        val count = dis.readInt()
+                        for (i in 0 until count) {
+                            queue.addLast(readRecord(dis) ?: continue)
+                        }
+                        occupied = queue.sumOf { it.sizeBytes }
+                        needsHeader = false
+                        logRecords = 0
+                        compactLocked()
+                    }
+                    // ── v3:追加日志 ──
+                    LOG_VERSION -> {
+                        val storedOwner = dis.readUTF()
+                        if (owner != null && storedOwner != owner) {
+                            resetAll(); return
+                        }
+                        needsHeader = false
+                        try {
+                            while (true) {
+                                val kind = dis.readByte()
+                                logRecords++
+                                when (kind) {
+                                    REC_PUT -> queue.addLast(readRecord(dis) ?: continue)
+                                    REC_PUSH_FIRST -> queue.addFirst(readRecord(dis) ?: continue)
+                                    REC_REMOVE -> {
+                                        val id = dis.readUTF()
+                                        val idx = queue.indexOfFirst { it.id == id }
+                                        if (idx >= 0) queue.removeAt(idx)
+                                    }
+                                    REC_CLEAR -> queue.clear()
+                                    // 未知 kind:可能是写到一半被打断的尾巴,到此为止
+                                    else -> break
+                                }
+                            }
+                        } catch (_: java.io.EOFException) {
+                            // 追加日志的正常终点
+                        }
+                        occupied = queue.sumOf { it.sizeBytes }
+                    }
+                    else -> {
+                        resetAll(); return
+                    }
                 }
-                val storedOwner = dis.readUTF()
-                // owner 隔离:当前 owner 非空且跟文件里的不一致 → 旧账号残留,直接清掉
-                if (owner != null && storedOwner != owner) {
-                    file.delete(); return
-                }
-                val count = dis.readInt()
-                for (i in 0 until count) {
-                    queue.addLast(readRecord(dis) ?: continue)
-                }
-                occupied = queue.sumOf { it.sizeBytes }
             }
         } catch (e: Exception) {
             ImcEvents.emit(ImcEvent.InternalError(
@@ -268,68 +356,117 @@ class FileMessageCache @JvmOverloads constructor(
                 errorClass = e.javaClass.simpleName,
                 message = "${e.message} (file=$file)",
             ))
-            try { file.delete() } catch (_: Exception) {}
-            queue.clear(); occupied = 0
+            resetAll()
         }
     }
 
-    private fun flushToFile() {
+    /** 追加一条记录到日志尾部。必须在 [lock] 内调用。 */
+    private fun appendLocked(kind: Byte, message: CachedMessage? = null, id: String? = null) {
         try {
             val parent = file.parentFile
             if (parent != null && !parent.exists()) parent.mkdirs()
-            val tmp = if (parent != null) File(parent, file.name + ".tmp") else File(file.path + ".tmp")
-            DataOutputStream(tmp.outputStream().buffered()).use { dos ->
-                dos.writeInt(MAGIC)
-                dos.writeByte(VERSION.toInt())
-                dos.writeUTF(owner ?: "")
-                dos.writeInt(queue.size)
-                for (m in queue) writeRecord(dos, m)
+            java.io.FileOutputStream(file, true).buffered().use { bos ->
+                DataOutputStream(bos).use { dos ->
+                    if (needsHeader) {
+                        dos.writeInt(MAGIC)
+                        dos.writeByte(LOG_VERSION.toInt())
+                        dos.writeUTF(owner ?: "")
+                        needsHeader = false
+                    }
+                    dos.writeByte(kind.toInt())
+                    when (kind) {
+                        REC_PUT, REC_PUSH_FIRST -> writeRecord(dos, message!!)
+                        REC_REMOVE -> dos.writeUTF(id!!)
+                        REC_CLEAR -> Unit
+                    }
+                }
             }
-            if (!tmp.renameTo(file)) {
-                // Windows 等平台 rename 不能覆盖,先删再 rename
-                file.delete()
-                tmp.renameTo(file)
-            }
+            logRecords++
         } catch (e: Exception) {
             ImcEvents.emit(ImcEvent.InternalError(
-                site = "FileMessageCache.flushToFile",
+                site = "FileMessageCache.appendLocked",
                 errorClass = e.javaClass.simpleName,
                 message = "${e.message} (file=$file)",
             ))
         }
     }
 
+    /** 压实:把当前队列重写成一遍干净的日志。必须在 [lock] 内调用。 */
+    private fun compactLocked() {
+        try {
+            val parent = file.parentFile
+            if (parent != null && !parent.exists()) parent.mkdirs()
+            val tmp = if (parent != null) File(parent, file.name + ".tmp") else File(file.path + ".tmp")
+            DataOutputStream(tmp.outputStream().buffered()).use { dos ->
+                dos.writeInt(MAGIC)
+                dos.writeByte(LOG_VERSION.toInt())
+                dos.writeUTF(owner ?: "")
+                for (m in queue) {
+                    dos.writeByte(REC_PUT.toInt())
+                    writeRecord(dos, m)
+                }
+            }
+            if (!tmp.renameTo(file)) {
+                // Windows 等平台 rename 不能覆盖,先删再 rename
+                file.delete()
+                tmp.renameTo(file)
+            }
+            logRecords = queue.size
+            needsHeader = false
+        } catch (e: Exception) {
+            ImcEvents.emit(ImcEvent.InternalError(
+                site = "FileMessageCache.compactLocked",
+                errorClass = e.javaClass.simpleName,
+                message = "${e.message} (file=$file)",
+            ))
+        }
+    }
+
+    private fun maybeCompactLocked() {
+        if (logRecords > queue.size * 2 + COMPACT_SLACK) compactLocked()
+    }
+
     override fun put(message: CachedMessage) {
         synchronized(lock) {
             var newOccupied = occupied + message.sizeBytes
+            val evicted = ArrayList<CachedMessage>()
             while (newOccupied > maxBytes && queue.isNotEmpty()) {
-                val evicted = queue.removeFirst()
-                newOccupied -= evicted.sizeBytes
+                val evictedMsg = queue.removeFirst()
+                evicted.add(evictedMsg)
+                newOccupied -= evictedMsg.sizeBytes
             }
             queue.addLast(message)
             occupied = newOccupied
-            flushToFile()
+            // 淘汰项写墓碑,否则重放时会复活
+            evicted.forEach { appendLocked(REC_REMOVE, id = it.id) }
+            appendLocked(REC_PUT, message = message)
+            maybeCompactLocked()
         }
     }
 
     override fun pollFirst(): CachedMessage? = synchronized(lock) {
         val m = queue.removeFirstOrNull() ?: return@synchronized null
         occupied -= m.sizeBytes
-        flushToFile()
+        appendLocked(REC_REMOVE, id = m.id)
+        maybeCompactLocked()
         m
     }
 
     override fun pushFirst(message: CachedMessage) {
         synchronized(lock) {
             var newOccupied = occupied + message.sizeBytes
+            val evicted = ArrayList<CachedMessage>()
             // 同 InMemoryMessageCache:外部直接调可能越界,从队尾淘汰,保留"插队最先发"语义。
             while (newOccupied > maxBytes && queue.isNotEmpty()) {
-                val evicted = queue.removeLast()
-                newOccupied -= evicted.sizeBytes
+                val evictedMsg = queue.removeLast()
+                evicted.add(evictedMsg)
+                newOccupied -= evictedMsg.sizeBytes
             }
             queue.addFirst(message)
             occupied = newOccupied
-            flushToFile()
+            evicted.forEach { appendLocked(REC_REMOVE, id = it.id) }
+            appendLocked(REC_PUSH_FIRST, message = message)
+            maybeCompactLocked()
         }
     }
 
@@ -338,7 +475,8 @@ class FileMessageCache @JvmOverloads constructor(
         if (idx < 0) return@synchronized false
         val m = queue.removeAt(idx)
         occupied -= m.sizeBytes
-        flushToFile()
+        appendLocked(REC_REMOVE, id = id)
+        maybeCompactLocked()
         true
     }
 
@@ -348,6 +486,8 @@ class FileMessageCache @JvmOverloads constructor(
         synchronized(lock) {
             queue.clear()
             occupied = 0
+            logRecords = 0
+            needsHeader = true
             try { file.delete() } catch (_: Exception) {}
         }
     }
