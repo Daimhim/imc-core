@@ -309,8 +309,20 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 spawnNewClient(key)
             }
             s is EngineState.Connecting && key != s.key -> {
-                state = EngineState.Reconnecting(key)
-                webSocketClient?.close()
+                // N4:旧 client 可能卡在不可中断的 DNS 解析里,close() 迟迟不回 onClose。
+                // 等它等于把 URL 切换拖到 DNS 超时(15–30s);极端下 autoConnect 也没有
+                // pending 定时器,状态就卡死在 Reconnecting。直接摘掉旧 client 的所有权、
+                // 立刻 spawn 新的;旧 client 迟到的 onClose 由 handleAfterClose 的身份守卫丢弃。
+                //
+                // 注意这条与 Connected 分支语义不同:那里刻意保留 close() → onClose →
+                // abnormalDisconnectionAndAutomaticReconnection 的标准抢救链(见
+                // WebSocketClientImpl.close 的注释);这里是「在途尝试被换掉」,
+                // 不是异常断连,本就该立刻换人而不是等旧的收场。
+                val old = webSocketClient
+                webSocketClient = null
+                old?.markSuperseded()
+                try { old?.close() } catch (_: Exception) {}
+                spawnNewClient(key)
             }
             s is EngineState.Connected && (force || key != s.key) -> {
                 // force:#4 A8 换网 kick / autoConnect 抢救 —— 同 key 也要真重建,
@@ -325,6 +337,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 // 避免错过 spawnNewClient 导致 engine 静默挂死。close 幂等,旧 client 已 closed
                 // 不会出错。
                 webSocketClient?.let {
+                    it.markSuperseded()
                     try { it.close() } catch (_: Exception) {}
                 }
                 webSocketClient = null
@@ -600,6 +613,21 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         private var autoConnect: IAutoConnect? = null
         private val syncConnectionLost = Any()
 
+        /**
+         * 本 client 已被引擎换下(URL 切换 / 同 key 强制重建 / spawnNewClient 换代)。
+         *
+         * 置位后迟到的 onClose/onError 一进来就早退:不推进引擎状态机、不唤醒 autoConnect。
+         * 修 N4:切换路径现在会立刻 spawn 新 client,旧 client 的收场可能迟到(卡在不可中断的
+         * DNS 里时尤其明显);走老路会进 handleAfterClose 的 Connected/Connecting 分支,
+         * 把 webSocketClient 置 null、把 Connecting(newKey) 打回 Reconnecting ——
+         * 刚起来的新 client 就这么被打掉。
+         *
+         * 与 [closeAndTerminate] 的 isClosed 分工:isClosed = 「会话被彻底终止,别再抢救」;
+         * superseded = 「我已经不是引擎的当前 client,我的收场不作数」。
+         */
+        @Volatile
+        private var superseded = false
+
         // 发送缓存:用 cacheSync 串行化 send() 路径里"判定 isOpen → 立即发 or 入缓存"两步,
         // 防止 isOpen 真切换瞬间出现旁路。缓存内部容量 / TTL / 持久化等策略全交给 [IMessageCache].
         private val cacheSync = Any()
@@ -693,6 +721,12 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 return
             }
             // 远端关闭: 区分 NORMAL/GOING_AWAY 与其他
+            // N4:已被引擎换下 —— 迟到的收场不推进状态机、不唤醒 autoConnect。
+            // 必须挡在 javaWebSocketListener 派发之前,否则 handleAfterClose 已经跑完。
+            if (superseded) {
+                ImcEvents.emit(ImcEvent.ConnectionClosed(code, reason, remote))
+                return
+            }
             val isRemoteNormalClose = remote &&
                 (code == CloseFrame.NORMAL || code == CloseFrame.GOING_AWAY)
             if (isRemoteNormalClose) {
@@ -707,6 +741,8 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
 
         override fun onError(ex: Exception) {
+            // N4:已被引擎换下,同 onClose
+            if (superseded) return
             javaWebSocketListener?.onError(ex)
             if (isClosed) return
             stopConnectionLostTimerEx(true)
@@ -739,6 +775,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 isClosed = true
             }
             super.close()
+        }
+
+        /** 引擎换代时调用:声明本 client 已被替换,之后的收场回调一律不作数。幂等。 */
+        fun markSuperseded() {
+            synchronized(syncConnectionLost) { superseded = true }
         }
 
         override fun connect() {

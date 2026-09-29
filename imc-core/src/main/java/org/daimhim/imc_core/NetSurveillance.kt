@@ -144,6 +144,18 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
     private var currentProfile: NetProbeProfile = builder.profile
 
     private val listeners = CopyOnWriteArrayList<NetReportListener>()
+
+    /**
+     * 输入代际:每次要产出一份新 report(新 snapshot / probe 完成 / burst 完成)就递增,
+     * 完成回调把自己那一代带回来。配合 [appliedInputSeq] 丢弃过期结果 —— 修 N5。
+     */
+    private val inputSeq = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /** 已采纳的最大输入代际,只在 [lock] 内读写 */
+    private var appliedInputSeq = 0L
+
+    /** 只护投递顺序,不护状态机:让「更新 report」与「投递」整体有序,又不把 emit 塞进 [lock] */
+    private val deliveryLock = Any()
     private val timer = RapidResponseForceV4()
     private val lock = Any()
 
@@ -306,8 +318,9 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
     }
 
     private fun applySnapshot(snapshot: NetSnapshot) {
+        val seq = inputSeq.incrementAndGet()
         val newReport = computeReport(snapshot, report.lastProbe)
-        notifyIfChanged(newReport)
+        notifyIfChanged(newReport, seq)
     }
 
     private fun scheduleProbe(immediate: Boolean) {
@@ -328,10 +341,12 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         callback: (() -> Unit)?
     ) {
         lastProbeAt = System.currentTimeMillis()
+        // 代际取在发起时刻:同一时刻只应有一个 probe 在飞,晚到的旧结果按代际被丢弃
+        val seq = inputSeq.incrementAndGet()
         // probeTimeoutMs 由 profile 决定,前台档可以更激进
         p.probe(t, currentProfile.probeTimeoutMs) { probeReport ->
             val newReport = computeReport(monitor.current(), probeReport, report.lastBurstProbe)
-            notifyIfChanged(newReport)
+            notifyIfChanged(newReport, seq)
             callback?.invoke()
         }
     }
@@ -351,6 +366,7 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         timer.register(BURST_TASK_ID, initialDelayMs) {
             // 这里再次读最新 currentProfile,因为 callback 触发时 profile 可能已经被改过
             val curProfile = currentProfile
+            val seq = inputSeq.incrementAndGet()
             p.probeBurst(
                 target = t,
                 attempts = curProfile.burstAttempts,
@@ -364,7 +380,7 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
                     timestamp = System.currentTimeMillis(),
                     lastBurstProbe = burstReport,
                 )
-                notifyIfChanged(newReport)
+                notifyIfChanged(newReport, seq)
                 // 排下一次。读 currentProfile 而不是闭包外 profile,跟随档位切换。
                 synchronized(lock) {
                     if (started && currentProfile.burstEnabled) scheduleBurst()
@@ -468,11 +484,20 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
         NetVerdict.OK -> ReconnectAction.IMMEDIATE
     }
 
-    private fun notifyIfChanged(next: NetReport) {
+    /**
+     * 投递一份新的 [NetReport]。
+     *
+     * @param seq 本次结果对应的输入代际,见 [inputSeq]。代际早于已采纳值的直接丢弃(N5)。
+     */
+    private fun notifyIfChanged(next: NetReport, seq: Long) {
         val prev: NetReport
         val changedSnapshot: Boolean
         val changedReport: Boolean
         synchronized(lock) {
+            // N5:过期结果不写也不投。慢的 probe 后到时,新结论(如网络恢复的 IMMEDIATE)
+            // 已被采纳,这时再写回去等于把 autoConnect 拖回退避,拖死一轮恢复。
+            if (seq < appliedInputSeq) return
+            appliedInputSeq = seq
             prev = report
             if (sameMeaning(next, prev)) return
             // 拆 snapshot 变化 vs report 整体变化两条事件,UI 可分开渲染
@@ -482,36 +507,42 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
                 !sameProbe(next.lastProbe, prev.lastProbe)
             report = next
         }
-        // 锁外:本地业务 listener
-        listeners.forEach {
-            try {
-                it.onReport(next)
-            } catch (e: Exception) {
-                e.printStackTrace()
+        // 投递用独立的 deliveryLock 串行,保证「更新 report」与「投递」整体有序。
+        // 仍然不把 emit 放进 lock:sink 卡顿不该反压状态机的读写(current / computeReport)。
+        synchronized(deliveryLock) {
+            // 等 deliveryLock 期间若被更新的结论取代,本次就不投了,让新的去投
+            if (seq < appliedInputSeq) return
+            // 本地业务 listener
+            listeners.forEach {
+                try {
+                    it.onReport(next)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
-        }
-        // 锁外:全局事件总线
-        if (changedSnapshot) {
-            val s = next.snapshot
-            ImcEvents.emit(
-                ImcEvent.NetSnapshotChanged(
-                    verdict = s.verdict,
-                    capabilities = s.capabilities,
-                    transports = s.transports,
-                    linkUpKbps = s.linkUpKbps,
-                    linkDownKbps = s.linkDownKbps,
-                    signalStrengthDbm = s.signalStrengthDbm,
+            // 全局事件总线
+            if (changedSnapshot) {
+                val snap = next.snapshot
+                ImcEvents.emit(
+                    ImcEvent.NetSnapshotChanged(
+                        verdict = snap.verdict,
+                        capabilities = snap.capabilities,
+                        transports = snap.transports,
+                        linkUpKbps = snap.linkUpKbps,
+                        linkDownKbps = snap.linkDownKbps,
+                        signalStrengthDbm = snap.signalStrengthDbm,
+                    )
                 )
-            )
-        }
-        if (changedReport) {
-            ImcEvents.emit(
-                ImcEvent.NetReportChanged(
-                    overall = next.overall,
-                    recommend = next.recommend,
-                    probeVerdict = next.lastProbe?.verdict,
+            }
+            if (changedReport) {
+                ImcEvents.emit(
+                    ImcEvent.NetReportChanged(
+                        overall = next.overall,
+                        recommend = next.recommend,
+                        probeVerdict = next.lastProbe?.verdict,
+                    )
                 )
-            )
+            }
         }
     }
 
