@@ -75,7 +75,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         if (nextKey == null) {
             return@IReconnector
         }
-        Thread({ engineOn(nextKey) }, "V2JWE-restart").start()
+        // #4:走 engineOnForce —— IReconnector.restart 的语义是「触发一次重连尝试」,
+        // 不是「确保连着」。同 key 也必须真重建:A8 传输层切换(WiFi<->VPN)在 wsOpen
+        // 时正是从这里进来,历史实现 engineOn(同 key) 在 dispatchEngineOn 的
+        // Connected 分支被 key != s.key 挡掉,静默 no-op,换网快速重建名存实亡。
+        Thread({ engineOnForce(nextKey) }, "V2JWE-restart").start()
     }
 
     /**
@@ -269,19 +273,36 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
     // ── IEngine API ────────────────────────────────────────────────────
 
-    override fun engineOn(key: String) {
+    override fun engineOn(key: String) = engineOnInternal(key, force = false)
+
+    /**
+     * 「触发一次重连尝试」入口,供 autoConnect 的 [IReconnector] 用。
+     *
+     * #4:与 [engineOn] 的幂等语义("确保用这个 key 连着")分开 ——
+     * 本方法同 key 也会真重建,见 [dispatchEngineOn] 的 force 参数。
+     */
+    private fun engineOnForce(key: String) = engineOnInternal(key, force = true)
+
+    private fun engineOnInternal(key: String, force: Boolean) {
         // 锁内只动状态机;事件 emit 放锁外,避免 sink 卡死引擎入口
         val keyChangeEvent: ImcEvent.EngineKeyChanged?
         synchronized(syncJWE) {
             val oldKey = state.targetKey()
             keyChangeEvent = if (oldKey != key) ImcEvent.EngineKeyChanged(oldKey, key) else null
-            dispatchEngineOn(key)
+            dispatchEngineOn(key, force)
         }
         keyChangeEvent?.let { ImcEvents.emit(it) }
     }
 
-    /** 必须在 syncJWE 锁内调用 */
-    private fun dispatchEngineOn(key: String) {
+    /**
+     * 必须在 syncJWE 锁内调用。
+     *
+     * @param force true = 「触发一次重连尝试」([engineOnForce]),同 key 也真重建;
+     *              false = [engineOn] 的幂等语义,同 key 已在连则不动。
+     *              force 只放宽 Connected 分支 —— Connecting 态的在途尝试不掐
+     *              (A8 先判 isOpen 到不了那里;同 key 的在途尝试让它自然回归更稳)。
+     */
+    private fun dispatchEngineOn(key: String, force: Boolean) {
         val s = state
         when {
             s == EngineState.Idle || s == EngineState.Closing -> {
@@ -291,7 +312,9 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 state = EngineState.Reconnecting(key)
                 webSocketClient?.close()
             }
-            s is EngineState.Connected && key != s.key -> {
+            s is EngineState.Connected && (force || key != s.key) -> {
+                // force:#4 A8 换网 kick / autoConnect 抢救 —— 同 key 也要真重建,
+                // 否则 transports 变化时的 reconnector.restart() 会在这里被静默吞掉。
                 state = EngineState.Reconnecting(key)
                 webSocketClient?.close()
             }
@@ -312,7 +335,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 state = EngineState.Reconnecting(key)
                 webSocketClient?.close()
             }
-            // 其他情况(同 key 已在连接 / 等关)no-op
+            // 其他情况 no-op:同 key 的 Connecting 在途尝试(force 也不掐)、或等关
         }
     }
 
