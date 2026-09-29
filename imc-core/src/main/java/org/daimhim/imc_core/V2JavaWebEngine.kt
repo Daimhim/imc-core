@@ -160,7 +160,13 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
 
         override fun onMessage(bytes: ByteBuffer) {
-            imcListenerManager.onMessage(this@V2JavaWebEngine, bytes.array())
+            // #6:不能用 bytes.array() —— 那是底层数组,长度是 capacity 而非本次消息长度,
+            // 分片 / 大消息时会把尾部垃圾字节一起交给业务;直接缓冲区(allocateDirect)还会抛
+            // UnsupportedOperationException。按 position..limit 精确拷贝,
+            // duplicate() 以免动到调用方的 position。
+            val payload = ByteArray(bytes.remaining())
+            bytes.duplicate().get(payload)
+            imcListenerManager.onMessage(this@V2JavaWebEngine, payload)
         }
 
         override fun onClose(code: Int, reason: String?, remote: Boolean) {
@@ -232,11 +238,15 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             // 锁内只搬状态机 + 抓 transition 描述,事件 emit 移到锁外
             data class Transition(val from: String, val to: String, val reason: String)
             var transition: Transition? = null
-            val nextKey: String? = synchronized(syncJWE) {
+            // #5:KeyProvider.provide() 可能卡(典型:token 续期要走网络),绝不能在 syncJWE
+            // 锁内调 —— 会把所有状态迁移一起堵住。锁内只决定「要不要拿 key」,真正 resolve
+            // 放到锁外。
+            var needKey = false
+            synchronized(syncJWE) {
                 when (val s = state) {
                     is EngineState.Reconnecting -> {
                         webSocketClient = null
-                        if (autoConnect.isActive()) null else resolveReconnectKey()
+                        needKey = !autoConnect.isActive()
                     }
                     is EngineState.Connected, is EngineState.Connecting -> {
                         val k = s.targetKey()!!
@@ -248,15 +258,13 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                         // 在 Reconnecting 状态,业务侧表现为"点了 Connect 很久不连上"。
                         webSocketClient = null
                         transition = Transition(prev, state.toString(), "waiting auto-reconnect")
-                        null
                     }
                     EngineState.Closing -> {
                         webSocketClient = null
                         state = EngineState.Idle
                         transition = Transition("Closing", "Idle", "engineOff complete")
-                        null
                     }
-                    EngineState.Idle -> null
+                    EngineState.Idle -> Unit
                 }
             }
             transition?.let {
@@ -264,9 +272,12 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                     ImcEvent.EngineStateTransition(it.from, it.to, it.reason)
                 )
             }
-            // 锁外 engineOn 避免重入
-            if (nextKey != null) {
-                Thread({ engineOn(nextKey) }, "V2JWE-restart").start()
+            // 锁外 resolve key + 起重连线程:既避免 engineOn 重入,也避免 KeyProvider 卡住状态机
+            if (needKey) {
+                val nextKey = resolveReconnectKey()
+                if (nextKey != null) {
+                    Thread({ engineOn(nextKey) }, "V2JWE-restart").start()
+                }
             }
         }
     }

@@ -20,6 +20,16 @@ class RapidResponseForceV4(
     private val MAX_TIMEOUT_TIME: Long = 5 * 1000,
 ) {
     companion object{
+        /**
+         * 计时用单调时钟(毫秒)。
+         *
+         * #9:计时只关心「过了多久」,不能用墙钟 —— NTP 校时 / 手动改时间会让墙钟跳变:
+         * 往前跳,所有任务瞬间集体到期、批量误触发;往后跳,一段时间内谁都不触发。
+         * [System.nanoTime] 由 JVM 保证单调且只有差值有意义,正好匹配这里的用途。
+         * (任务的对外 timestamp 字段仍用墙钟,那是给人看的时间点。)
+         */
+        internal fun nowMs(): Long = System.nanoTime() / 1_000_000L
+
         private var lastOnlyId  = System.currentTimeMillis()
         @Synchronized
         internal fun makeOnlyId():String{
@@ -60,7 +70,7 @@ class RapidResponseForceV4(
      */
     fun register(id: String, timeoutMs: Long = MAX_TIMEOUT_TIME, onTimeout: (id: String) -> Unit) {
         synchronized(lock) {
-            tasks[id] = Task(id, System.currentTimeMillis() + timeoutMs, onTimeout)
+            tasks[id] = Task(id, nowMs() + timeoutMs, onTimeout)
             ensureWorker()
             lock.notifyAll()
         }
@@ -114,7 +124,7 @@ class RapidResponseForceV4(
             // 1. 收割所有已到期任务
             val expired = ArrayList<Task>()
             synchronized(lock) {
-                val now = System.currentTimeMillis()
+                val now = nowMs()
                 val iter = tasks.entries.iterator()
                 while (iter.hasNext()) {
                     val task = iter.next().value
@@ -148,7 +158,7 @@ class RapidResponseForceV4(
                     workerThread = null
                     return
                 }
-                val now = System.currentTimeMillis()
+                val now = nowMs()
                 var nearest = Long.MAX_VALUE
                 for (task in tasks.values) {
                     val remaining = task.deadline - now

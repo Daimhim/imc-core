@@ -461,8 +461,10 @@ class DefaultNetProber(
         if (budget < 100) return ProbeStage(false, 0L, "publicRef: no time left")
         val start = System.currentTimeMillis()
         return try {
-            val addrs = dnsCache.resolve(target.host)
-            if (addrs.isEmpty()) return ProbeStage(false, System.currentTimeMillis() - start, "publicRef: dns empty")
+            // #7:DNS 必须走超时包装。getAllByName 不可中断,直接调 dnsCache.resolve
+            // 会让系统 DNS 卡住时把整个探测预算吹爆(stageDns 早有这个包装,这里漏了)。
+            val (_, addrs) = stageDns(target.host, stageBudget(deadline))
+            if (addrs.isEmpty()) return ProbeStage(false, System.currentTimeMillis() - start, "publicRef: dns empty/timeout")
             // 顺序尝试各地址
             for (addr in addrs) {
                 val remainBudget = stageBudget(deadline)
