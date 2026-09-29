@@ -25,8 +25,10 @@ class BurstProbeTest {
         assertEquals(110L, r.maxMs)
         assertEquals(95.0, r.meanMs!!, 0.001)
         // stddev 验算:数据 [80,100,90,110,95] mean=95
-        // diffs: -15,5,-5,15,0 → squares 225,25,25,225,0 → mean 100 → sqrt 10
-        assertEquals(10.0, r.jitterMs!!, 0.001)
+        // diffs: -15,5,-5,15,0 → squares 225,25,25,225,0 → sum 500
+        // 样本方差(Bessel 修正,除以 n-1=4) = 125 → sqrt ≈ 11.18034
+        // 若按 population(除以 n=5)会是 10.0;jitterMs 刻意用样本估计,见 NetProbe.kt
+        assertEquals(11.180339887498949, r.jitterMs!!, 0.001)
         // p50 / p95
         assertNotNull(r.p50Ms)
         assertNotNull(r.p95Ms)

@@ -54,11 +54,23 @@ class V2JavaWebEngineReconnectStormTest {
         )
     }
 
+    /** 不接管退避的 autoConnect:isActive=false,等价于历史的"不挂 autoConnect" */
+    private class InactiveAutoConnect : IAutoConnect {
+        override fun initAutoConnect(webSocketClient: V2JavaWebEngine.WebSocketClientImpl) {}
+        override fun abnormalDisconnectionAndAutomaticReconnection() {}
+        override fun resetStartAutoConnect() {}
+        override fun startAutoConnect() {}
+        override fun stopAutoConnect() {}
+        override fun isActive(): Boolean = false
+    }
+
     @Test
-    fun urlSwitchPathStillWorksWhenNoAutoConnect() {
-        // 不挂 autoConnect 的情况:URL 切换路径仍然要立即重启
+    fun urlSwitchPathStillWorksWhenAutoConnectInactive() {
+        // autoConnect 现在是 Builder 必填,"不挂 autoConnect"已不可能;改用 isActive=false
+        // 的空实现等价覆盖:验证 autoConnect 不接管时 URL 切换路径仍然要立即重启。
         val engine = V2JavaWebEngine.Builder()
             .addHeartbeatMode(0, V2FixedHeartbeat.Builder().setCurHeartbeat(60).build())
+            .setAutoConnect(InactiveAutoConnect())
             .build()
         engine.engineOn("ws://127.0.0.1:1")
         Thread.sleep(500)

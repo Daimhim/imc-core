@@ -70,8 +70,13 @@ class NetSurveillanceTest {
         val sv = buildSurveillance(monitor, prober)
 
         sv.start()
+        // BLOCKED 是硬终态,仍然压过探测层的 SERVER_REACHABLE
         assertEquals(NetVerdict.BLOCKED, sv.current().overall)
-        assertEquals(ReconnectAction.WAIT_USER, sv.current().recommend)
+        // 但 recommend 不再是 WAIT_USER:BLOCKED 来自 Android onBlockedStatusChanged,
+        // 是 Doze / 后台数据限制的临时状态,会自动解除。映射 WAIT_USER 等于永久放弃抢救
+        // (06-15 实测 03:39 被挡到 04:29 才恢复,中间 ~50min 完全不重连)。
+        // 改 BACKOFF_LONG 慢速续命;block 解除时 verdict 回 OK 立刻重排 IMMEDIATE。
+        assertEquals(ReconnectAction.BACKOFF_LONG, sv.current().recommend)
         sv.stop()
     }
 

@@ -196,7 +196,11 @@ class V2JavaWebEngineCurrentKeyTest {
 
     @Test
     fun engineOn_initial_call_records_currentKey() {
-        val engine = V2JavaWebEngine.Builder().build()
+        // autoConnect 现在是 Builder 必填(build() 强校验非空),本用例只关心 URL 是否
+        // 被状态机记录,给个最小可用的 ProgressiveAutoConnect 即可。
+        val engine = V2JavaWebEngine.Builder()
+            .setAutoConnect(ProgressiveAutoConnect.Builder().build())
+            .build()
 
         try {
             engine.engineOn("ws://192.0.2.1:65535")
