@@ -22,16 +22,19 @@ interface IAutoConnect {
     fun startAutoConnect()
 
     /**
-     * 停止启动
+     * 停止抢救:撤定时器、清退避与各类计数。不代表连接建立 —— WAIT_USER / FAILOVER 接管 /
+     * dispose 等路径也走这里。连接真正建立请走 [onConnectionEstablished]。
      */
     fun stopAutoConnect()
 
     /**
-     * 当前是否正在抢救中(已被调度 / 在重连 / 在等下次)。
-     * 用于 V2JavaWebEngine 区分:
-     *  - true  → 自动重连已经管,handleAfterClose 不要再开一条独立重连路径
-     *  - false → 没人管,handleAfterClose 可以直接重启(URL 切换路径)
+     * 连接建立(onOpen)。默认等同 [stopAutoConnect];实现可在此做「会话开始」类记账
+     * (如 [ProgressiveAutoConnect] 的 flapping 短命会话统计),这些记账不能挂在
+     * stopAutoConnect 上 —— 后者在非建连路径上也会被调。
      */
+    fun onConnectionEstablished() = stopAutoConnect()
+
+    /** 当前是否正在抢救中(已被调度 / 在重连 / 在等下次),调试与状态判断用 */
     fun isActive(): Boolean = false
 
     /**
@@ -76,8 +79,26 @@ interface IAutoConnect {
  * engineOn 走 spawnNewClient 不依赖现有 client 存活。
  */
 fun interface IReconnector {
-    /** 触发一次重连尝试。实现负责拿最新 url + 起新 client + 状态机推进。 */
-    fun restart()
+    /**
+     * 触发一次重连尝试。实现负责拿最新 url + 起新 client + 状态机推进。
+     *
+     * @param reason 决定对「当前 client」的处置,见 [RestartReason]
+     */
+    fun restart(reason: RestartReason)
+}
+
+/** [IReconnector.restart] 的触发原因 */
+enum class RestartReason {
+    /**
+     * 退避定时器到点的例行重试。已连上的 client 照样重建(同 key 也重建,#4),
+     * 但**在途**的连接尝试不掐 —— 让它自然回归。
+     */
+    SCHEDULED,
+
+    /**
+     * 传输层切换(如 WIFI → 蜂窝 / VPN)。旧 socket 绑在旧网卡上,连同在途尝试一并换掉。
+     */
+    TRANSPORT_CHANGED,
 }
 
 /**
@@ -239,8 +260,8 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     //    指数抬升,封顶 [FLAPPING_MAX_DELAY_MS](2s/4s/8s/15s)
     //  - 任何一个存活 >= 30s 的会话死亡时清零
     //  - 只有"建立后的第一次 abnormal"才记账,连接尝试失败的 abnormal 不参与(那走正常指数退避)
-    // lastEstablishedTs 近似取上次 stopAutoConnect 时刻(≈ onOpen 成功);WAIT_USER 等
-    // 无连接的 stop 路径也会刷新它,精度足够 — 该信号本来就是统计性的。
+    // lastEstablishedTs 取 [onConnectionEstablished](onOpen)时刻;stopAutoConnect 的
+    // 其它路径(WAIT_USER / kick / dispose)不碰它。
     @Volatile private var shortSessionStreak: Int = 0
     @Volatile private var lastEstablishedTs: Long = 0L
     @Volatile private var flapAccounted: Boolean = true
@@ -371,11 +392,14 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             ImcEvents.emit(
                 ImcEvent.AutoConnectAborted("transports-changed:${newTransports}")
             )
-            // 当前 connected → 戳一下 reconnector 让它重建 client(走 engineOn → spawnNewClient)
+            // 当前 connected → 戳 reconnector 重建 client(旧 socket 绑在旧网卡上)
+            // 连接尝试在途 → 同样换掉(R1:历史上这里两条分支都落空,在途尝试可能卡在旧网卡上
+            //                直到握手看门狗);切到无网(transports 为空)时换了也连不上,不换
             // 当前 waiting → 重排到 IMMEDIATE
             val wsOpen = isOpen()
-            if (wsOpen) {
-                reconnector?.restart()
+            val inFlight = synchronized(syncConnectionLost) { isConnectingAutomatically }
+            if (wsOpen || (inFlight && newTransports.isNotEmpty())) {
+                reconnector?.restart(RestartReason.TRANSPORT_CHANGED)
                 return
             }
             synchronized(syncConnectionLost) {
@@ -615,16 +639,14 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             consecutiveAttemptTimeouts = 0
             lastProbeWasTlsLikeFailure = false
             inLinkDegradedState = false
-            lastSeenTransports = null
+            // 刻意不清 lastSeenTransports:它是 A8 换网检测的基线,与抢救周期无关。历史上在这里清,
+            // 健康时的 makeConnection / onNetworkChange(→ LEGACY_START → stop)会抹掉基线,
+            // 紧随其后的换网 report 因 prev==null 被当成首份快照,A8 不触发
             failoverUnhandledCount = 0
             failoverUnhandledNotified = false
             lastAction = null
             lastEffectiveAction = null
             lastScheduledDelay = initReconnectDelay
-            // flapping 记账:这次 stop 大概率是 onOpen 成功 → 会话建立时刻。刻意不清
-            // shortSessionStreak —— 它就是要扛住"成功即清零"的退避重置(在会话死亡时结算)。
-            lastEstablishedTs = System.currentTimeMillis()
-            flapAccounted = false
             timeoutScheduler.stop()
             active
         }
@@ -633,6 +655,17 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         attemptWatchdog.unregister(attemptWatchdogId)
         // 仅当确实在抢救中才 emit aborted,避免 stopAutoConnect 被反复幂等调用时噪声爆炸
         if (wasActive) ImcEvents.emit(ImcEvent.AutoConnectAborted("stopAutoConnect"))
+    }
+
+    override fun onConnectionEstablished() {
+        synchronized(syncConnectionLost) {
+            // flapping 记账的会话起点。只在真正建连时记 —— 历史挂在 stopAutoConnect 上,
+            // 健康时的每次 kick(→ stop)都会刷新起点,把长会话误记成短命会话。
+            // 刻意不清 shortSessionStreak:它就是要扛住"成功即清零"的退避重置(在会话死亡时结算)。
+            lastEstablishedTs = System.currentTimeMillis()
+            flapAccounted = false
+        }
+        stopAutoConnect()
     }
 
     override fun isActive(): Boolean = synchronized(syncConnectionLost) {
@@ -925,7 +958,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             if (r != null) {
                 // 新路径:走 engine.engineOn → spawnNewClient,拿 KeyProvider 提供的最新 url。
                 // 不依赖 webSocketClient 存活,修了 client=null 时 reconnect() no-op 的 P0-1 bug。
-                r.restart()
+                r.restart(RestartReason.SCHEDULED)
             } else {
                 // 回退:老 SDK 集成、没注入 reconnector 的场景
                 webSocketClient?.reconnect()

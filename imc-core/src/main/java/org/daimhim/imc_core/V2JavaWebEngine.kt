@@ -16,16 +16,17 @@ import java.nio.ByteBuffer
  *
  * ```
  *     Idle ──engineOn(k)──→ Connecting(k) ──onOpen──→ Connected(k)
- *      ↑          ↑               │                       │
- *      │          │               │ onClose/onError       │ onClose/onError
- *      │          │               ↓                       ↓
- *      │          └─────── Reconnecting(k') ←─engineOn(k')─┘
- *      │                          │
- *      │                          │ (auto-reconnect 后 onOpen,
- *      │                          │  或 onClose 路径里 engineOn(k') 重启)
- *      │ engineOff                │
- *      └────── Closing ←──────────┘
+ *                             ↑   │                       │
+ *          replaceClient(k')  │   │ onClose/onError       │ onClose/onError
+ *     (换 key / 重试 / 换网)   │   ↓                       ↓
+ *                             └─ Reconnecting(k) ←─────────┘
+ *                                 (autoConnect 定时 → replaceClient)
+ *
+ *     任意状态 ──engineOff──→ Closing ──→ Idle
  * ```
+ *
+ * Connecting / Connected 也可直接 replaceClient 回到 Connecting(k'):旧 client 被标记换下,
+ * 它迟到的收场回调不推进状态机。
  */
 internal sealed class EngineState {
     object Idle : EngineState()
@@ -70,18 +71,17 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      *  - 修了 webSocketClient=null 时 reconnect() no-op 的卡死 bug(走 spawnNewClient
      *    不依赖现有 client 存活)
      *
-     * 在锁外 fork 线程,因为 engineOn 内部 synchronized,autoConnect 的 alarm 回调线程不该被它阻塞。
+     * 在锁外 fork 线程,因为 engineOn 内部 synchronized,autoConnect 的 alarm 回调线程不该被它阻塞;
+     * KeyProvider 也放进线程里调 —— 它可能卡(token 续期走网络),不能卡住调度线程。
      */
-    private val autoConnectReconnector = IReconnector {
-        val nextKey = resolveReconnectKey()
-        if (nextKey == null) {
-            return@IReconnector
-        }
-        // #4:走 engineOnForce —— IReconnector.restart 的语义是「触发一次重连尝试」,
-        // 不是「确保连着」。同 key 也必须真重建:A8 传输层切换(WiFi<->VPN)在 wsOpen
-        // 时正是从这里进来,历史实现 engineOn(同 key) 在 dispatchEngineOn 的
-        // Connected 分支被 key != s.key 挡掉,静默 no-op,换网快速重建名存实亡。
-        Thread({ engineOnForce(nextKey) }, "V2JWE-restart").start()
+    private val autoConnectReconnector = IReconnector { reason ->
+        // #4:IReconnector.restart 的语义是「触发一次重连尝试」,不是「确保连着」——
+        // 同 key 也必须真重建,见 [DispatchMode]
+        val mode = if (reason == RestartReason.SCHEDULED) DispatchMode.RETRY else DispatchMode.REPLACE
+        Thread({
+            val nextKey = resolveReconnectKey() ?: return@Thread
+            engineOnInternal(nextKey, mode, "autoConnect:$reason")
+        }, "V2JWE-restart").start()
     }
 
     /**
@@ -231,26 +231,27 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
 
         /**
-         * onClose / onError 后的统一状态推进:
-         *  - Reconnecting(k') 路径(URL 切换 / 调度的重连):置空 client + 重新 engineOn(k')
-         *  - Connected/Connecting:转 Reconnecting(curKey),交给 ProgressiveAutoConnect 接管
+         * onClose / onError 后的统一状态推进(仅当前 client;被换下的 client 在
+         * WebSocketClientImpl 层已早退,到不了这里):
+         *  - Connected/Connecting:转 Reconnecting(curKey),由 autoConnect 接管
+         *    (WebSocketClientImpl 随后调 abnormalDisconnectionAndAutomaticReconnection)
+         *  - Reconnecting:client 已不在,只做兜底置空
          *  - Closing:转 Idle 并释放
          *  - Idle:已经被 engineOff 清理过,无事可做
+         *
+         * #9:历史上 Reconnecting 分支在 autoConnect 不活跃时会另起 V2JWE-restart 线程 engineOn,
+         * 与紧随其后的 abnormalDisconnection → autoConnect 构成两条并行重连路径。换 client
+         * 现在统一走 [replaceClient](旧 client 被标记换下,收场不作数),这条路径已无来源,删除。
          */
         private fun handleAfterClose() {
             handshakeWatchdog.unregister(handshakeWatchdogId)
             // 锁内只搬状态机 + 抓 transition 描述,事件 emit 移到锁外
             data class Transition(val from: String, val to: String, val reason: String)
             var transition: Transition? = null
-            // #5:KeyProvider.provide() 可能卡(典型:token 续期要走网络),绝不能在 syncJWE
-            // 锁内调 —— 会把所有状态迁移一起堵住。锁内只决定「要不要拿 key」,真正 resolve
-            // 放到锁外。
-            var needKey = false
             synchronized(syncJWE) {
                 when (val s = state) {
                     is EngineState.Reconnecting -> {
                         webSocketClient = null
-                        needKey = !autoConnect.isActive()
                     }
                     is EngineState.Connected, is EngineState.Connecting -> {
                         val k = s.targetKey()!!
@@ -276,95 +277,90 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                     ImcEvent.EngineStateTransition(it.from, it.to, it.reason)
                 )
             }
-            // 锁外 resolve key + 起重连线程:既避免 engineOn 重入,也避免 KeyProvider 卡住状态机
-            if (needKey) {
-                val nextKey = resolveReconnectKey()
-                if (nextKey != null) {
-                    Thread({ engineOn(nextKey) }, "V2JWE-restart").start()
-                }
-            }
         }
     }
 
     // ── IEngine API ────────────────────────────────────────────────────
 
-    override fun engineOn(key: String) = engineOnInternal(key, force = false)
+    override fun engineOn(key: String) = engineOnInternal(key, DispatchMode.ENSURE, "engineOn")
 
     /**
-     * 「触发一次重连尝试」入口,供 autoConnect 的 [IReconnector] 用。
+     * [dispatchEngineOn] 对「当前 client」的处置方式。
      *
-     * #4:与 [engineOn] 的幂等语义("确保用这个 key 连着")分开 ——
-     * 本方法同 key 也会真重建,见 [dispatchEngineOn] 的 force 参数。
+     * #4:[engineOn] 是幂等语义("确保用这个 key 连着"),而 autoConnect 的 [IReconnector]
+     * 是"触发一次重连尝试",同 key 也要真重建 —— 两者必须分开。
      */
-    private fun engineOnForce(key: String) = engineOnInternal(key, force = true)
+    private enum class DispatchMode {
+        /** [engineOn]:同 key 已连 / 在连则不动;换 key 才换 client */
+        ENSURE,
 
-    private fun engineOnInternal(key: String, force: Boolean) {
+        /** autoConnect 定时重试:已连上的照样重建;同 key 的在途尝试不掐,让它自然回归 */
+        RETRY,
+
+        /** 换网 / 回前台等:当前 client(含在途尝试)一律换掉 */
+        REPLACE,
+    }
+
+    private fun engineOnInternal(key: String, mode: DispatchMode, reason: String) {
         // 锁内只动状态机;事件 emit 放锁外,避免 sink 卡死引擎入口
         val keyChangeEvent: ImcEvent.EngineKeyChanged?
+        val transition: ImcEvent.EngineStateTransition?
         synchronized(syncJWE) {
-            val oldKey = state.targetKey()
+            val prev = state
+            // 内部重启(autoConnect / 换网 / 回前台)不得把已 engineOff 的引擎拉起来:
+            // V2JWE-restart 线程与 engineOff 存在竞态,只有业务显式 engineOn 才能从 Idle 起步
+            if (mode != DispatchMode.ENSURE &&
+                (prev == EngineState.Idle || prev == EngineState.Closing)
+            ) return
+            val oldKey = prev.targetKey()
             keyChangeEvent = if (oldKey != key) ImcEvent.EngineKeyChanged(oldKey, key) else null
-            dispatchEngineOn(key, force)
+            val replaced = dispatchEngineOn(key, mode)
+            transition = if (replaced && prev !is EngineState.Reconnecting && prev != EngineState.Idle) {
+                ImcEvent.EngineStateTransition(prev.toString(), state.toString(), "replace:$reason")
+            } else null
         }
         keyChangeEvent?.let { ImcEvents.emit(it) }
+        transition?.let { ImcEvents.emit(it) }
     }
 
     /**
      * 必须在 syncJWE 锁内调用。
      *
-     * @param force true = 「触发一次重连尝试」([engineOnForce]),同 key 也真重建;
-     *              false = [engineOn] 的幂等语义,同 key 已在连则不动。
-     *              force 只放宽 Connected 分支 —— Connecting 态的在途尝试不掐
-     *              (A8 先判 isOpen 到不了那里;同 key 的在途尝试让它自然回归更稳)。
+     * @return true = 起了新 client
      */
-    private fun dispatchEngineOn(key: String, force: Boolean) {
+    private fun dispatchEngineOn(key: String, mode: DispatchMode): Boolean {
         val s = state
-        when {
-            s == EngineState.Idle || s == EngineState.Closing -> {
-                spawnNewClient(key)
-            }
-            s is EngineState.Connecting && key != s.key -> {
-                // N4:旧 client 可能卡在不可中断的 DNS 解析里,close() 迟迟不回 onClose。
-                // 等它等于把 URL 切换拖到 DNS 超时(15–30s);极端下 autoConnect 也没有
-                // pending 定时器,状态就卡死在 Reconnecting。直接摘掉旧 client 的所有权、
-                // 立刻 spawn 新的;旧 client 迟到的 onClose 由 handleAfterClose 的身份守卫丢弃。
-                //
-                // 注意这条与 Connected 分支语义不同:那里刻意保留 close() → onClose →
-                // abnormalDisconnectionAndAutomaticReconnection 的标准抢救链(见
-                // WebSocketClientImpl.close 的注释);这里是「在途尝试被换掉」,
-                // 不是异常断连,本就该立刻换人而不是等旧的收场。
-                val old = webSocketClient
-                webSocketClient = null
-                old?.markSuperseded()
-                try { old?.close() } catch (_: Exception) {}
-                spawnNewClient(key)
-            }
-            s is EngineState.Connected && (force || key != s.key) -> {
-                // force:#4 A8 换网 kick / autoConnect 抢救 —— 同 key 也要真重建,
-                // 否则 transports 变化时的 reconnector.restart() 会在这里被静默吞掉。
-                state = EngineState.Reconnecting(key)
-                webSocketClient?.close()
-            }
-            s is EngineState.Reconnecting && key == s.key -> {
-                // 同 key 调度的重连进来(典型:autoConnect alarm fire 走 reconnector.restart →
-                // engineOn(同 key))。理论上 webSocketClient 已被 handleAfterClose 置 null;
-                // 兜底:若没置(历史 bug 残留 / 其他路径),这里先把旧 client 关掉再 spawn,
-                // 避免错过 spawnNewClient 导致 engine 静默挂死。close 幂等,旧 client 已 closed
-                // 不会出错。
-                webSocketClient?.let {
-                    it.markSuperseded()
-                    try { it.close() } catch (_: Exception) {}
-                }
-                webSocketClient = null
-                spawnNewClient(key)
-            }
-            s is EngineState.Reconnecting && key != s.key -> {
-                // 切到另一个 key, 旧 client 可能还在关
-                state = EngineState.Reconnecting(key)
-                webSocketClient?.close()
-            }
-            // 其他情况 no-op:同 key 的 Connecting 在途尝试(force 也不掐)、或等关
+        val replace = when (s) {
+            EngineState.Idle, EngineState.Closing -> true
+            // Reconnecting:旧 client 已在 handleAfterClose 置空,任何 key 都直接起新的
+            is EngineState.Reconnecting -> true
+            is EngineState.Connecting -> key != s.key || mode == DispatchMode.REPLACE
+            is EngineState.Connected -> key != s.key || mode != DispatchMode.ENSURE
         }
+        if (replace) replaceClient(key)
+        return replace
+    }
+
+    /**
+     * 必须在 syncJWE 锁内调用。换掉当前 client(若有)并立即起新的。
+     *
+     * 所有换 client 的路径(换 URL、autoConnect 重试、换网、回前台)统一走这里。旧 client 先
+     * [WebSocketClientImpl.markSuperseded] 再 close:它迟到的 onClose/onError 一律不作数 ——
+     * 不推进状态机、不唤醒 autoConnect、池子也不会冲进它。
+     *
+     * N4:旧 client 可能卡在不可中断的 DNS 解析里,close() 迟迟不回 onClose;不等它收场,
+     * 立刻 spawn 新的。#9:历史上 Connected 分支走「close → onClose → handleAfterClose 另起
+     * 线程 engineOn」+「abnormal → autoConnect 排定时」两条并行重连路径,定时若在新连接
+     * onOpen 之后到点,会把刚建好的连接再拆一次。
+     */
+    private fun replaceClient(key: String) {
+        val old = webSocketClient
+        webSocketClient = null
+        if (old != null) {
+            old.markSuperseded()
+            try { old.close() } catch (_: Exception) {}
+        }
+        spawnNewClient(key)
     }
 
     /**
@@ -588,7 +584,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      * ⚠ 连接健康(isOpen)时**不能**走 client.resetStartAutoConnect()——它会
      * stopConnectionLostTimer 而 autoConnect 并不会真的重连(连接没断),心跳计时器
      * 被停后再无人重挂,连接静默到被服务端空闲踢。典型触发:App 冷启动网络监控的
-     * 初始回调 onNetworkChange → kickReconnect。健康时只重置退避计数即可。
+     * 初始回调 onNetworkChange → kickReconnect。健康时什么都不做。
      *
      * 等待重连期间的 reset 语义见 ProgressiveAutoConnect.resetStartAutoConnect:压缩 pending
      * 定时器到 IMMEDIATE(带 500ms 去抖),不再重排满退避、也不会被连环 poke 推迟 fire。
@@ -598,7 +594,9 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         when {
             client == null -> autoConnect.resetStartAutoConnect()
             !client.isOpen -> client.resetStartAutoConnect()   // 半开/未连:停心跳 + 催重连(历史行为)
-            else -> autoConnect.resetStartAutoConnect()        // 健康:不动心跳,只重置退避计数
+            // 健康:什么都不做。没有退避可重置;历史上这里走 resetStartAutoConnect → stop+start,
+            // 会刷新 flapping 会话起点(#6)
+            else -> Unit
         }
     }
 
@@ -682,7 +680,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             stopConnectionLostTimerEx()
             startConnectionLostTimerEx()
             linkNative?.updateLastPong()
-            stopAutoConnect()
+            autoConnect?.onConnectionEstablished()
             javaWebSocketListener?.onOpen(handshakedata)
         }
 
