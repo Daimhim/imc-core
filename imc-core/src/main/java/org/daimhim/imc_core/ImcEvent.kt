@@ -242,7 +242,7 @@ sealed class ImcEvent {
 
     // ── CACHE ──────────────────────────────────────────────────────────────
 
-    /** send() 时未连上,消息进缓存 */
+    /** send() 时未连上,带业务 ID 的消息进重发池;[id] 即业务 ID */
     data class MessageCached(
         val id: String,
         val isText: Boolean,
@@ -252,7 +252,7 @@ sealed class ImcEvent {
         override val category get() = Category.CACHE
     }
 
-    /** 重连后一条消息被 flush 出网 */
+    /** 重连后一条池中消息被写入 socket;[id] 即业务 ID */
     data class MessageFlushed(
         val id: String,
         val sizeBytes: Int,
@@ -261,9 +261,22 @@ sealed class ImcEvent {
         override val category get() = Category.CACHE
     }
 
-    enum class EvictReason { TTL_EXPIRED, OVER_CAPACITY, EXPLICIT_CLEAR }
+    enum class EvictReason {
+        TTL_EXPIRED,
+        OVER_CAPACITY,
+        EXPLICIT_CLEAR,
+        /** 业务通过 [IResendPool.take] / [IResendPool.drain] 取走,内核不再发(不算丢失) */
+        TAKEN,
+        /** 会话结束(engineOff / 退出登录),整池回收 */
+        SESSION_END,
+        /** [IResendPool.bindOwner] 换了账号,旧账号的消息整池回收 */
+        OWNER_CHANGED,
+    }
 
-    /** 消息被丢弃(TTL 过期 / 容量淘汰 / 显式 clear) */
+    /**
+     * 消息离开重发池且不会再被内核发出(TTL 过期 / 容量淘汰 / 会话结束 / 换账号 / 被业务取走)。
+     * 对带业务 ID 发送的消息,[id] 就是业务 ID。
+     */
     data class MessageEvicted(
         val id: String,
         val reason: EvictReason,

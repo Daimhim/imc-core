@@ -60,7 +60,7 @@ sealed class CachedMessage {
  * 引擎([V2JavaWebEngine.WebSocketClientImpl])在断网期间按 FIFO 把待发的
  * 文本 / 字节消息推进缓存,重连后调 [pollFirst] 排空。
  *
- * **实现必须线程安全**:引擎自身已在 `cacheSync` 锁内调用,但缓存还可能被
+ * **实现必须线程安全**:引擎通过 [ResendPool] 在池锁内调用,但缓存还可能被
  * 实现自带的 TTL / 淘汰回调访问。
  *
  * 自带实现:

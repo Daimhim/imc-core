@@ -30,20 +30,38 @@ interface IEngine {
      */
     fun engineState():Int
     /**
-     * 发送字节消息。
+     * 发送字节消息(不带业务 ID,内核**不缓存、不重发**)。
      *
-     * 返回值仅代表「调用瞬间是否处于 Connected 且帧已立即出网」:
-     *  - **true** = 当前 socket 已建,消息已直接交给协议层成帧发送
-     *  - **false** = 当前不在 Connected 状态,内部已触发一次 [makeConnection],
-     *    **且消息已按 FIFO 进入 [IMessageCache]**,连上后会自动 flush —— 这不代表"丢消息"
+     *  - **true** = 已写入当前已打开的 socket(不保证服务端已收到)
+     *  - **false** = 连接未打开,**消息没有发出、也没有缓存**;内部已触发一次 [makeConnection]。
+     *    业务可放心自行重发
      *
-     * 业务侧不应把 false 当成失败上报,要可靠投递请配合 ack / 业务层重试。
+     * 1.1.17 起语义变更:此前 false 表示「已进缓存等重连」。需要内核代为重发请用
+     * [send] (byteArray, bizId)。
      */
     fun send(byteArray: ByteArray):Boolean
     /**
-     * 发送文本消息。返回值语义同 [send] (byteArray):false 仅代表未立即出网,消息已入缓存等重连。
+     * 发送文本消息。返回值语义同 [send] (byteArray):false = 没发出也没缓存。
      */
     fun send(text: String):Boolean
+
+    /**
+     * 带业务唯一 ID 发送(可选能力)。
+     *
+     * 连接未打开时按 [bizId] 进入内核重发池,连上后由内核发出;[bizId] 为 null 时等同不带 ID 的发送,
+     * 未连接直接 [SendResult.REJECTED]。业务自行重发前须先 [IResendPool.take],详见 [IResendPool]。
+     *
+     * 默认实现不支持重发池:只按 [send] (text) 的结果映射为 SENT / REJECTED。
+     */
+    fun send(text: String, bizId: String?): SendResult =
+        if (send(text)) SendResult.SENT else SendResult.REJECTED
+
+    /** 字节版本,语义同 [send] (text, bizId) */
+    fun send(byteArray: ByteArray, bizId: String?): SendResult =
+        if (send(byteArray)) SendResult.SENT else SendResult.REJECTED
+
+    /** 内核重发池;实现不支持时为 null */
+    fun resendPool(): IResendPool? = null
 
     /**
      * 订阅定制监听

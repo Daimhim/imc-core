@@ -52,7 +52,9 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     //  - Reconnecting 分支的"切 URL 立即重启 vs 让 autoConnect 退避"判断也需要 isActive()。
     private val autoConnect: IAutoConnect = builder.autoConnect
         ?: error("autoConnect 不能为空,请通过 Builder.setAutoConnect 注入")
-    private val messageCache: IMessageCache = builder.messageCache
+    // 内核重发池(可选能力):只收带业务 ID 的消息;跨 client 世代共享,engineOff 时整池回收
+    private val resendPool: ResendPool =
+        ResendPool(builder.messageCache, builder.resendPoolConfig, builder.clock)
     private val keyProvider: IKeyProvider? = builder.keyProvider
     private val certificatePinner: CertificatePinner? = builder.certificatePinner
     // P1: 端侧 DNS 缓存(TTL + stale-fallback)。注入到每个 WebSocketClientImpl,让重连在 DNS 抖动时
@@ -385,7 +387,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         val client = WebSocketClientImpl(
             uri,
             timeout = connectTimeout,
-            messageCache = messageCache,
+            resendPool = resendPool,
             certificatePinner = certificatePinner,
             dnsCache = dnsCache,
         ).apply {
@@ -481,9 +483,9 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             true
         }
         if (!shouldNotify) return
-        // 真正的会话终止才清缓存(持久化实现的 clear() 会抹掉文件 / SP)。
-        // 切 URL 那条路径不走 engineOff,因此不会误伤缓存。
-        try { messageCache.clear() } catch (e: Exception) { e.printStackTrace() }
+        // 真正的会话终止才回收重发池:逐条 MessageEvicted(SESSION_END),业务据此改状态 / 留待下次登录补发。
+        // 切 URL / 强制重建那些路径不走 engineOff,因此不会误伤池子。
+        try { resendPool.endSession() } catch (e: Exception) { e.printStackTrace() }
         // 释放 autoConnect 持有的外部资源(典型:NetSurveillance 的 listener),避免泄漏。
         // 如果用户在 engineOff 后又调 engineOn 复用同一 engine,需要新建 builder 重新注入 autoConnect。
         try { autoConnect.dispose() } catch (e: Exception) { e.printStackTrace() }
@@ -507,16 +509,32 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         is EngineState.Reconnecting -> IEngineState.ENGINE_FAILED
     }
 
-    override fun send(byteArray: ByteArray): Boolean {
-        if (state !is EngineState.Connected) makeConnection()
-        webSocketClient?.send(byteArray)
-        return state is EngineState.Connected
-    }
+    // 返回值以「是否真的写进了已打开的 socket」为准,不再看状态机:心跳判死 / 换网 kick 的软 close
+    // 之后 state 仍是 Connected、socket 已在 CLOSING,历史实现在这里返回 true 而帧实际进了缓存被丢弃。
+    override fun send(byteArray: ByteArray): Boolean = send(byteArray, null) == SendResult.SENT
 
-    override fun send(text: String): Boolean {
-        if (state !is EngineState.Connected) makeConnection()
-        webSocketClient?.send(text)
-        return state is EngineState.Connected
+    override fun send(text: String): Boolean = send(text, null) == SendResult.SENT
+
+    override fun send(text: String, bizId: String?): SendResult =
+        dispatchSend(bizId, CachedMessage.Text(bizId ?: "", text, clock()))
+
+    override fun send(byteArray: ByteArray, bizId: String?): SendResult =
+        dispatchSend(bizId, CachedMessage.Binary(bizId ?: "", byteArray.copyOf(), clock()))
+
+    override fun resendPool(): IResendPool = resendPool
+
+    private val clock: () -> Long = builder.clock
+
+    private fun dispatchSend(bizId: String?, message: CachedMessage): SendResult {
+        val client: WebSocketClientImpl?
+        val inSession: Boolean
+        synchronized(syncJWE) {
+            client = webSocketClient
+            inSession = state != EngineState.Idle && state != EngineState.Closing
+        }
+        val result = resendPool.sendOrQueue(bizId, message, client?.poolWriter, allowQueue = inSession)
+        if (result != SendResult.SENT && inSession) makeConnection()
+        return result
     }
 
     override fun addIMCListener(imcListener: V2IMCListener) {
@@ -588,7 +606,8 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         serverUri: URI,
         httpHeaders: Map<String, String> = mutableMapOf(),
         timeout: Int = 0,
-        private val messageCache: IMessageCache = InMemoryMessageCache(),
+        /** 引擎共享的重发池;单独使用 client 时给一个独立的空池 */
+        private val resendPool: ResendPool = ResendPool(),
         /** A5: 证书指纹校验钩子,null 表示不做 pinning */
         private val certificatePinner: CertificatePinner? = null,
         /** P1: 端侧 DNS 缓存,接进库的 DnsResolver,DNS 抖动时回退历史 IP */
@@ -638,10 +657,6 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
          */
         @Volatile
         private var superseded = false
-
-        // 发送缓存:用 cacheSync 串行化 send() 路径里"判定 isOpen → 立即发 or 入缓存"两步,
-        // 防止 isOpen 真切换瞬间出现旁路。缓存内部容量 / TTL / 持久化等策略全交给 [IMessageCache].
-        private val cacheSync = Any()
 
         // ── 协议层(java-websocket 回调)──────────────────────────────
 
@@ -770,8 +785,8 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             // 引擎卡死在 Reconnecting,业务侧表现为"点 Connect 很久不连上"(P0)。
             // 现在的语义是:close() = 软 close,让 onClose / onError 继续走标准抢救链;
             // engineOff 真正终止会话要走 [closeAndTerminate],显式标记 isClosed 阻断 autoConnect。
-            // 同样**不**调 messageCache.clear() —— URL 切换路径也会走 close(),清了等于丢消息;
-            // 清缓存只在 engineOff 的快路径里做。
+            // 同样**不**回收重发池 —— URL 切换路径也会走 close(),清了等于丢消息;
+            // 池的回收只在 engineOff 里做。
         }
 
         /**
@@ -879,90 +894,54 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             autoConnect?.startAutoConnect()
         }
 
-        // ── 发送缓存层 ────────────────────────────────────────────────
+        // ── 发送层 ────────────────────────────────────────────────────
         //
-        // 未连上时按 FIFO 把应用层 payload(text / 字节)塞进 [messageCache];
-        // isOpen 切换 / onMessage / onPong 触发 retryingSendingCache 排空。
-        // 帧不缓存, flush 时按当前 [draft] 重新成帧 — 这样持久化实现只需要序列化 payload。
-        // 客户端必须 mask, draft.createFrames 第二参数固定 true。
+        // 直接对 client 调 send(心跳等)只在 socket 已打开时发,未打开**直接丢弃**,不缓存 ——
+        // 迟到的心跳没有意义,业务消息要内核代发请走引擎的 send(payload, bizId) 进重发池。
+        // Java-WebSocket 在未打开时 send 会抛 WebsocketNotConnectedException,这里吞掉:
+        // 「判 isOpen → 写」之间 socket 可能刚好被关。
 
         override fun send(text: String?) {
-            if (text.isNullOrEmpty()) return
-            // 锁内只动缓存,锁外 emit:synchronized 是 inline 的,non-local return 可以直接跳出 send
-            val cachedEvent: ImcEvent.MessageCached = synchronized(cacheSync) {
-                if (isOpen) {
-                    super.send(text)
-                    return  // non-local return → 不走 emit
-                }
-                val msg = CachedMessage.Text(RapidResponseForceV4.makeOnlyId(), text)
-                messageCache.put(msg)
-                ImcEvent.MessageCached(msg.id, isText = true, sizeBytes = msg.sizeBytes)
-            }
-            ImcEvents.emit(cachedEvent)
+            if (text.isNullOrEmpty() || !isOpen) return
+            try { super.send(text) } catch (_: org.java_websocket.exceptions.WebsocketNotConnectedException) {}
         }
 
         override fun send(data: ByteArray?) {
-            if (data == null) return
-            val cachedEvent: ImcEvent.MessageCached = synchronized(cacheSync) {
-                if (isOpen) {
-                    super.send(data)
-                    return
-                }
-                val msg = CachedMessage.Binary(RapidResponseForceV4.makeOnlyId(), data)
-                messageCache.put(msg)
-                ImcEvent.MessageCached(msg.id, isText = false, sizeBytes = msg.sizeBytes)
-            }
-            ImcEvents.emit(cachedEvent)
+            if (data == null || !isOpen) return
+            try { super.send(data) } catch (_: org.java_websocket.exceptions.WebsocketNotConnectedException) {}
         }
 
         override fun send(bytes: ByteBuffer?) {
-            if (bytes == null) return
-            val cachedEvent: ImcEvent.MessageCached = synchronized(cacheSync) {
-                if (isOpen) {
-                    super.send(bytes)
-                    return
-                }
-                // ByteBuffer 可能直接共享底层数组,持久化场景必须复制成独立 byte[]
-                val arr = ByteArray(bytes.remaining())
-                bytes.duplicate().get(arr)
-                val msg = CachedMessage.Binary(RapidResponseForceV4.makeOnlyId(), arr)
-                messageCache.put(msg)
-                ImcEvent.MessageCached(msg.id, isText = false, sizeBytes = msg.sizeBytes)
-            }
-            ImcEvents.emit(cachedEvent)
+            if (bytes == null || !isOpen) return
+            try { super.send(bytes) } catch (_: org.java_websocket.exceptions.WebsocketNotConnectedException) {}
         }
 
-        private fun retryingSendingCache() {
-            // 收集本次 flush 的事件,锁内只填,锁外统一 emit
-            val flushedEvents = ArrayList<ImcEvent>()
-            var remaining = 0
-            synchronized(cacheSync) {
-                if (!isOpen || messageCache.isEmpty()) return@synchronized
-                var flushed = 0
-                var item = messageCache.pollFirst()
-                while (item != null) {
-                    if (!isOpen) {
-                        // 中途断了,放回队首等下次
-                        messageCache.pushFirst(item)
-                        remaining = messageCache.size()
-                        break
-                    }
-                    val frames = when (val m: CachedMessage = item) {
-                        is CachedMessage.Text -> draft.createFrames(m.text, true)
-                        is CachedMessage.Binary -> draft.createFrames(ByteBuffer.wrap(m.data), true)
-                    }
-                    sendFrame(frames)
-                    flushedEvents.add(ImcEvent.MessageFlushed(item.id, item.sizeBytes))
-                    flushed++
-                    item = messageCache.pollFirst()
+        /**
+         * 给重发池的写出口。已被换下 / 已终止的 client 一律视为不可写,
+         * 迟到的回调不会把池子冲进旧 socket。
+         */
+        internal val poolWriter: ResendPool.Writer = object : ResendPool.Writer {
+            override val isOpenForWrite: Boolean
+                get() = isOpen && !superseded && !isClosed
+
+            /**
+             * 按当前 [draft] 成帧写出(池里存的是 payload 不是帧)。客户端必须 mask,
+             * createFrames 第二参数固定 true。未打开时 sendFrame 抛 WebsocketNotConnectedException,
+             * 由池把这条留在池里。
+             */
+            override fun write(message: CachedMessage) {
+                val frames = when (message) {
+                    is CachedMessage.Text -> draft.createFrames(message.text, true)
+                    is CachedMessage.Binary -> draft.createFrames(ByteBuffer.wrap(message.data), true)
                 }
-                if (remaining == 0) remaining = messageCache.size()
-                if (flushed > 0) {
-                    flushedEvents.add(ImcEvent.CacheFlushBatch(flushed = flushed, remaining = remaining))
-                }
+                sendFrame(frames)
             }
-            // 锁外 emit
-            for (e in flushedEvents) ImcEvents.emit(e)
+        }
+
+        /** onOpen / 入站消息 / pong 时把重发池里的存量冲出去 */
+        private fun retryingSendingCache() {
+            if (!poolWriter.isOpenForWrite) return
+            resendPool.flush(poolWriter)
         }
 
     }
@@ -979,7 +958,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         internal var heartbeatMode = mutableMapOf<Int, ILinkNative>()
         internal var defHeartbeatMode = 0
         internal var autoConnect: IAutoConnect? = null
-        internal var messageCache: IMessageCache = InMemoryMessageCache()
+        // 重发池的存储层:容量 / TTL 由 ResendPoolConfig 管,存储本身不淘汰
+        internal var messageCache: IMessageCache = InMemoryMessageCache(maxBytes = Int.MAX_VALUE, maxAgeMs = 0)
+        internal var resendPoolConfig: ResendPoolConfig = ResendPoolConfig()
+        /** 池的时钟,单测注入;生产用墙钟(Doze 期间照常走,TTL 判定不会被冻结) */
+        internal var clock: () -> Long = { System.currentTimeMillis() }
         internal var keyProvider: IKeyProvider? = null
         internal var certificatePinner: CertificatePinner? = null
         internal var dnsCache: DnsCache = DnsCache()
@@ -1017,18 +1000,21 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         fun setAutoConnect(auto: IAutoConnect) = apply { autoConnect = auto }
 
         /**
-         * 替换默认的发送缓存实现。
+         * 替换重发池的存储层。
          *
-         * 默认 [InMemoryMessageCache](64KB + 5s TTL),纯内存。
-         * 想要进程重建后继续重放就用 [FileMessageCache];Android 想存到 SP
-         * 可参考 demo 模块的 `SharedPrefsMessageCache`。
+         * 默认纯内存(不自带淘汰,容量 / TTL 由 [setResendPoolConfig] 管)。
+         * 想要进程重建后继续重放就用 [FileMessageCache](建议传 owner = 账号 ID,
+         * maxBytes 不小于池的 maxBytes);Android 想存到 SP 可参考 demo 模块的 `SharedPrefsMessageCache`。
          *
-         * ⚠ 业务消息**不要**依赖这层缓存:引擎在 onOpen 时先 flush 缓存、再通知业务重发
-         * (messageReissue/补发任务)。同一条业务消息若既进过引擎缓存又在业务等待回执表里,
-         * 会被双发。缓存层只适合心跳类幂等 payload(现状:QGBHeartbeat);业务消息应像
-         * SendOrderTask 那样在未连接时拦截排队,由业务自己的补发链路保证发送语义。
+         * 只有带业务 ID 发送的消息才会进池,详见 [IResendPool]。用持久化存储时,业务在进程重启后
+         * 自行补发前同样要先 [IResendPool.take],否则会和内核从文件恢复的条目双发。
          */
         fun setMessageCache(cache: IMessageCache) = apply { this.messageCache = cache }
+
+        /** 重发池容量 / TTL / 状态记录保留策略,见 [ResendPoolConfig] */
+        fun setResendPoolConfig(config: ResendPoolConfig) = apply { this.resendPoolConfig = config }
+
+        internal fun setClock(clock: () -> Long) = apply { this.clock = clock }
 
         fun build(): V2JavaWebEngine = V2JavaWebEngine(this)
     }
