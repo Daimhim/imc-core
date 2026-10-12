@@ -151,7 +151,7 @@ class FastResumeTest {
     fun connected_probeAnswered_keepsConnection() {
         val port = freePort()
         val server = startServer(CountingServer(port))
-        val engine = newEngine(port, JumpClock(), FastResumePolicy(probeTimeoutMs = 500))
+        val engine = newEngine(port, JumpClock(), FastResumePolicy(probe = FastResumePolicy.Probe.WS_PING, probeTimeoutMs = 500))
         engine.engineOn("ws://127.0.0.1:$port")
         assertTrue(waitUntil { engine.engineState() == IEngineState.ENGINE_OPEN })
 
@@ -167,7 +167,7 @@ class FastResumeTest {
     fun connected_probeUnanswered_isReplaced() {
         val port = freePort()
         val server = startServer(PingSwallowServer(port))
-        val engine = newEngine(port, JumpClock(), FastResumePolicy(probeTimeoutMs = 500))
+        val engine = newEngine(port, JumpClock(), FastResumePolicy(probe = FastResumePolicy.Probe.WS_PING, probeTimeoutMs = 500))
         engine.engineOn("ws://127.0.0.1:$port")
         assertTrue(waitUntil { engine.engineState() == IEngineState.ENGINE_OPEN })
 

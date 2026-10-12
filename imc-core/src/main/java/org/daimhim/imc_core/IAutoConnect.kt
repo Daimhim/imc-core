@@ -70,13 +70,19 @@ interface IAutoConnect {
     /**
      * 释放本实例持有的外部资源(典型:[NetSurveillance] 的 listener、内部线程等)。
      *
-     * **由 [V2JavaWebEngine.engineOff] 自动调用一次**;如果业务想复用同一个 engine 反复
-     * engineOn/engineOff,需要在每次 engineOff 后用新的 Builder + 新的 autoConnect 实例
-     * 重新构造 engine,**不能**重用已 dispose 过的 autoConnect(否则 surveillance 不再驱动它)。
+     * **由 [V2JavaWebEngine.engineOff] 自动调用一次**。dispose 之后实现应停止一切调度,
+     * 外部再戳(网络回调 → makeConnection 等)也不得自行起抢救,直到 [revive]。
      *
      * 默认 no-op,允许实现选择性实现。dispose 应当幂等。
      */
     fun dispose() {}
+
+    /**
+     * 撤销 [dispose]:恢复外部资源(重新订阅 surveillance 等),重新开始响应断线。
+     * 由 [V2JavaWebEngine.engineOn] 从 Idle 起步时调用 —— 接入方登出(engineOff)后再登录
+     * 往往复用同一个引擎。未 dispose 时调用应为 no-op。默认 no-op。
+     */
+    fun revive() {}
 }
 
 /**
@@ -259,8 +265,14 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     /** IMMEDIATE / FAILOVER 的实际调度延时,见 [DEFAULT_IMMEDIATE_DELAY_MS] */
     private val immediateDelayMs: Long = builder.immediateDelayMs
 
-    /** reset-kick 最近一次压缩 pending 定时器的时刻(去抖用,见 [resetStartAutoConnect]) */
-    @Volatile private var lastResetKickTs: Long = 0L
+    /**
+     * 内部计时时钟(只用差值):reset-kick 去抖、flapping 会话时长、attempt 看门狗。
+     * 与引擎的 elapsedClock 同源,Android 注入 elapsedRealtime;历史上前两者用墙钟,校时会跳变。
+     */
+    private val elapsedClock: () -> Long = builder.elapsedClock
+
+    /** reset-kick 最近一次压缩 pending 定时器的时刻(去抖用,见 [resetStartAutoConnect]);MIN_VALUE = 从未 */
+    @Volatile private var lastResetKickTs: Long = Long.MIN_VALUE
 
     // ── flapping 退避(连续短命会话) ─────────────────────────────────────
     //
@@ -334,7 +346,10 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
      * abnormalDisconnectionAndAutomaticReconnection 的链路应该在 15s 内回归,30s 还没回就一定异常。
      */
     private val attemptTimeoutMs: Long = builder.attemptTimeoutMs.toLong()
-    private val attemptWatchdog = RapidResponseForceV4(clock = builder.elapsedClock)
+    private val attemptWatchdog = RapidResponseForceV4(
+        clock = builder.elapsedClock,
+        maxWaitSliceMs = RapidResponseForceV4.WATCHDOG_WAIT_SLICE_MS,
+    )
     private val attemptWatchdogId = "auto-attempt-watchdog"
 
     private val timeoutCall = object : Callable<Void> {
@@ -358,8 +373,9 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     /**
      * 释放 surveillance 的 listener 引用,防止 engine 重建场景的内存泄漏。
      *
-     * 幂等;dispose 后再调 startAutoConnect 等接口仍可工作,但 surveillance 不再驱动它
-     * (因为没人 register 了)。所以正常用法是 dispose = 终态。
+     * 幂等。dispose 后 startAutoConnect / resetStartAutoConnect / 断线上报 / onResume 一律 no-op,
+     * 直到 [revive]:历史上 dispose 后外部 poke 仍能起抢救,引擎已 Idle 时 restart 被挡、
+     * 在途标记只能等 30s 看门狗清 → 再排 → 无限空转。
      */
     override fun dispose() {
         if (disposed) return
@@ -369,6 +385,14 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         // 释放(防止 engineOff 后 attempt watchdog 还在持有外部回调引用)
         attemptWatchdog.clear()
         stopAutoConnect()
+    }
+
+    override fun revive() {
+        synchronized(syncConnectionLost) {
+            if (!disposed) return
+            disposed = false
+        }
+        surveillance?.register(surveillanceListener)
     }
 
     override fun initAutoConnect(webSocketClient: V2JavaWebEngine.WebSocketClientImpl) {
@@ -491,6 +515,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     }
 
     override fun abnormalDisconnectionAndAutomaticReconnection() {
+        if (disposed) return
         // flapping 记账:只结算"建立后的第一次 abnormal"(连接尝试失败不走这里重记),
         // 短命(<30s)累计、健康会话清零
         var streakAfterAccounting = -1
@@ -498,7 +523,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             synchronized(syncConnectionLost) {
                 if (!flapAccounted) {
                     flapAccounted = true
-                    val upMs = System.currentTimeMillis() - lastEstablishedTs
+                    val upMs = elapsedClock() - lastEstablishedTs
                     if (upMs >= 0 && upMs < SHORT_SESSION_THRESHOLD_MS) {
                         shortSessionStreak++
                     } else {
@@ -511,8 +536,13 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         val action = consultRecommend()
         // 编排层若判定要等用户介入(门户认证/被阻塞), 直接放弃自动抢救;
         // App 需要在用户解决问题后主动调 makeConnection() / resetStartAutoConnect()
+        // 两条放弃路径都要 stopAutoConnect 清状态:历史上直接 return,在途尝试失败时
+        // isConnectingAutomatically / isAutomaticallyConnecting 残留为 true —— 名义中止,30s 后
+        // attempt 看门狗又把抢救拉起来;且 isActive() 一直为 true,回前台快速恢复误以为有人在管。
+        // 与 onSurveillanceUpdate 的 WAIT_USER / FAILOVER_HANDLED 语义对齐
         if (action == ReconnectAction.WAIT_USER) {
             ImcEvents.emit(ImcEvent.AutoConnectAborted("WAIT_USER"))
+            stopAutoConnect()
             return
         }
         // 编排层判定切备用接入点: 先让 App 接管, 若已处理则 SDK 不再调度本 URL 的重连
@@ -523,6 +553,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             ImcEvents.emit(ImcEvent.FailoverInvoked(handledByApp = handled))
             if (handled) {
                 ImcEvents.emit(ImcEvent.AutoConnectAborted("FAILOVER_HANDLED"))
+                stopAutoConnect()
                 return
             }
             trackFailoverUnhandled()
@@ -573,13 +604,15 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         val COMPRESS = 1
         val NOOP = 2
         val LEGACY_START = 3
+        if (disposed) return
         var prevDelay = 0L
         val decision = synchronized(syncConnectionLost) {
             when {
                 isWaitingNextAutomaticConnection -> {
-                    val now = System.currentTimeMillis()
+                    val now = elapsedClock()
                     if (lastScheduledDelay > immediateDelayMs &&
-                        now - lastResetKickTs >= RESET_KICK_DEBOUNCE_MS
+                        (lastResetKickTs == Long.MIN_VALUE ||
+                            now - lastResetKickTs >= RESET_KICK_DEBOUNCE_MS)
                     ) {
                         lastResetKickTs = now
                         prevDelay = lastScheduledDelay
@@ -617,6 +650,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
 
     override fun startAutoConnect(){
         synchronized(syncConnectionLost) {
+            if (disposed) return
             if (isOpen()) {
                 // 不需要抢救
                 return
@@ -672,6 +706,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         var fireNow = false
         var rearmWatchdog = false
         synchronized(syncConnectionLost) {
+            if (disposed) return false
             // 回前台是新的起点:后台攒下的大退避、用光的快试额度、硬地板探测标记、
             // 链路降级判定都作废(环境多半已变,且用户在等)
             reconnectDelay = initReconnectDelay
@@ -704,7 +739,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             // flapping 记账的会话起点。只在真正建连时记 —— 历史挂在 stopAutoConnect 上,
             // 健康时的每次 kick(→ stop)都会刷新起点,把长会话误记成短命会话。
             // 刻意不清 shortSessionStreak:它就是要扛住"成功即清零"的退避重置(在会话死亡时结算)。
-            lastEstablishedTs = System.currentTimeMillis()
+            lastEstablishedTs = elapsedClock()
             flapAccounted = false
         }
         stopAutoConnect()
@@ -1101,7 +1136,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         // 心跳调度器
         internal var timeoutScheduler : ITimeoutScheduler = RRFTimeoutScheduler()
 
-        /** attempt 超时兜底的计时时钟,见 [setElapsedClock] */
+        /** 内部计时时钟(attempt 看门狗 / reset-kick 去抖 / flapping 会话时长),见 [setElapsedClock] */
         internal var elapsedClock: () -> Long = { RapidResponseForceV4.nowMs() }
 
         /**

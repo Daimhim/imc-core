@@ -22,9 +22,19 @@ class RapidResponseForceV4(
      * 计时时钟(毫秒,只用差值)。默认 [nowMs](nanoTime)。
      *
      * Android 上 nanoTime 是 CLOCK_MONOTONIC,**设备休眠期间不走**:冻结前挂的 15s 看门狗,
-     * 解冻后还要再等剩余时长。注入 SystemClock.elapsedRealtime(含休眠)后,解冻即判到期。
+     * 解冻后还要再等剩余时长。注入 SystemClock.elapsedRealtime(含休眠)后,到期判定按含休眠的时长算;
+     * 但 worker 的 `wait` 本身仍按单调时钟计时,醒来时机要靠 [maxWaitSliceMs] 兜。
      */
     private val clock: () -> Long = { nowMs() },
+    /**
+     * 单次 wait 的上限(毫秒),0 = 不限(一次 wait 到最近截止)。
+     *
+     * `Object.wait` 在 Android 上按 CLOCK_MONOTONIC 计时,设备深睡期间不走:即便 [clock] 注入了
+     * elapsedRealtime,worker 也要再 wait 完剩余的单调时长才会醒来重新判定。设了上限后,解冻后
+     * 至多晚这么久就能按 [clock] 判到期。只给短命的看门狗用 —— 有任务挂着期间 worker 每隔这么久
+     * 醒一次,常驻任务(如心跳)不要设。
+     */
+    private val maxWaitSliceMs: Long = 0L,
 ) {
     companion object{
         /**
@@ -36,6 +46,9 @@ class RapidResponseForceV4(
          * (任务的对外 timestamp 字段仍用墙钟,那是给人看的时间点。)
          */
         internal fun nowMs(): Long = System.nanoTime() / 1_000_000L
+
+        /** 看门狗类短命任务的 [maxWaitSliceMs]:设备解冻后至多晚 1s 判到期 */
+        internal const val WATCHDOG_WAIT_SLICE_MS = 1_000L
 
         private var lastOnlyId  = System.currentTimeMillis()
         @Synchronized
@@ -173,7 +186,7 @@ class RapidResponseForceV4(
                 }
                 if (nearest > 0L) {
                     try {
-                        lock.wait(nearest)
+                        lock.wait(if (maxWaitSliceMs > 0) minOf(nearest, maxWaitSliceMs) else nearest)
                     } catch (e: InterruptedException) {
                         workerRunning = false
                         workerThread = null

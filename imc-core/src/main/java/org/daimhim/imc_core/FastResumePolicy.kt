@@ -21,8 +21,12 @@ data class FastResumePolicy(
      * 建议取「服务端空闲超时 - 余量」,如服务端 60s 空闲踢人则取 50s。
      */
     val staleAfterMs: Long = 0L,
-    /** Connected 且未判死时的探活方式 */
-    val probe: Probe = Probe.WS_PING,
+    /**
+     * Connected 且未判死时的探活方式。默认 [Probe.HEARTBEAT]:发的就是当前档位线上在用的心跳,
+     * 它能不能拿到应答已经由心跳判活验证过;[Probe.WS_PING] 要求服务端确实回 pong,
+     * 不回的话每次回前台都会把健康连接拆掉重建,确认过再用。
+     */
+    val probe: Probe = Probe.HEARTBEAT,
     /** 探活等待时长 */
     val probeTimeoutMs: Long = 3_000L,
     /** Connecting 在途尝试超过该值视作陈旧,换掉重来 */
@@ -41,7 +45,7 @@ data class FastResumePolicy(
         /** 不探活:未超 [staleAfterMs] 即视作健康。适用于不回任何应答的服务端 */
         NONE,
 
-        /** 发 WS ping(RFC 6455 要求服务端回 pong) */
+        /** 发 WS ping(RFC 6455 要求服务端回 pong,但并非所有服务端 / 网关都照做) */
         WS_PING,
 
         /** 走当前心跳档位的 [ILinkNative.sendHeartbeat](自定义心跳 + 按档位配置的 ping) */

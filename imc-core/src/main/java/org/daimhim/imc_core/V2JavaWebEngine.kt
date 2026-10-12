@@ -134,7 +134,10 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     // 15s 看门狗 —— 到点了如果 state 还是 Connecting(同 key) 且 client 还是当时那个,
     // 强 close() 走 onClose 链回到 Reconnecting,让 autoConnect 接管。
     // onOpen / handleAfterClose / engineOff 都要 unregister 它。
-    private val handshakeWatchdog = RapidResponseForceV4(clock = builder.elapsedClock)
+    private val handshakeWatchdog = RapidResponseForceV4(
+        clock = builder.elapsedClock,
+        maxWaitSliceMs = RapidResponseForceV4.WATCHDOG_WAIT_SLICE_MS,
+    )
     private val handshakeWatchdogId = "handshake-watchdog"
     private val handshakeTimeoutMs: Long = 15_000L
 
@@ -316,9 +319,13 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     }
 
     private fun engineOnInternal(key: String, mode: DispatchMode, reason: String) {
-        // 锁内只动状态机;事件 emit 放锁外,避免 sink 卡死引擎入口
+        // 业务显式 engineOn 从 Idle 起步:把上次 engineOff 时 dispose 掉的 autoConnect 恢复过来
+        // (企管帮等接入方登出 → 再登录复用同一个引擎,不重建)。锁外调:实现可能碰 surveillance
+        if (mode == DispatchMode.ENSURE && state == EngineState.Idle) autoConnect.revive()
+        // 锁内只动状态机;事件 emit 和关旧 client 都放锁外,避免 sink 卡死引擎入口
         val keyChangeEvent: ImcEvent.EngineKeyChanged?
         val transition: ImcEvent.EngineStateTransition?
+        val superseded: WebSocketClientImpl?
         synchronized(syncJWE) {
             val prev = state
             // 内部重启(autoConnect / 换网 / 回前台)不得把已 engineOff 的引擎拉起来:
@@ -328,53 +335,47 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             ) return
             val oldKey = prev.targetKey()
             keyChangeEvent = if (oldKey != key) ImcEvent.EngineKeyChanged(oldKey, key) else null
-            val replaced = dispatchEngineOn(key, mode)
-            transition = if (replaced && prev !is EngineState.Reconnecting && prev != EngineState.Idle) {
+            val replace = shouldReplace(key, mode)
+            superseded = if (replace) replaceClient(key) else null
+            transition = if (replace && prev !is EngineState.Reconnecting && prev != EngineState.Idle) {
                 ImcEvent.EngineStateTransition(prev.toString(), state.toString(), "replace:$reason")
             } else null
         }
+        // 旧 client 已 markSuperseded,迟到回调不作数;close 可能同步回调 onClose 并 emit,放锁外
+        superseded?.let { try { it.close() } catch (_: Exception) {} }
         keyChangeEvent?.let { ImcEvents.emit(it) }
         transition?.let { ImcEvents.emit(it) }
     }
 
-    /**
-     * 必须在 syncJWE 锁内调用。
-     *
-     * @return true = 起了新 client
-     */
-    private fun dispatchEngineOn(key: String, mode: DispatchMode): Boolean {
-        val s = state
-        val replace = when (s) {
-            EngineState.Idle, EngineState.Closing -> true
-            // Reconnecting:旧 client 已在 handleAfterClose 置空,任何 key 都直接起新的
-            is EngineState.Reconnecting -> true
-            is EngineState.Connecting -> key != s.key || mode == DispatchMode.REPLACE
-            is EngineState.Connected -> key != s.key || mode != DispatchMode.ENSURE
-        }
-        if (replace) replaceClient(key)
-        return replace
+    /** 必须在 syncJWE 锁内调用。按当前状态与 [mode] 判断是否要换 client */
+    private fun shouldReplace(key: String, mode: DispatchMode): Boolean = when (val s = state) {
+        EngineState.Idle, EngineState.Closing -> true
+        // Reconnecting:旧 client 已在 handleAfterClose 置空,任何 key 都直接起新的
+        is EngineState.Reconnecting -> true
+        is EngineState.Connecting -> key != s.key || mode == DispatchMode.REPLACE
+        is EngineState.Connected -> key != s.key || mode != DispatchMode.ENSURE
     }
 
     /**
-     * 必须在 syncJWE 锁内调用。换掉当前 client(若有)并立即起新的。
+     * 必须在 syncJWE 锁内调用。换下当前 client(若有)并立即起新的。
      *
      * 所有换 client 的路径(换 URL、autoConnect 重试、换网、回前台)统一走这里。旧 client 先
-     * [WebSocketClientImpl.markSuperseded] 再 close:它迟到的 onClose/onError 一律不作数 ——
+     * [WebSocketClientImpl.markSuperseded]:它迟到的 onOpen/onClose/onError 一律不作数 ——
      * 不推进状态机、不唤醒 autoConnect、池子也不会冲进它。
      *
      * N4:旧 client 可能卡在不可中断的 DNS 解析里,close() 迟迟不回 onClose;不等它收场,
      * 立刻 spawn 新的。#9:历史上 Connected 分支走「close → onClose → handleAfterClose 另起
      * 线程 engineOn」+「abnormal → autoConnect 排定时」两条并行重连路径,定时若在新连接
      * onOpen 之后到点,会把刚建好的连接再拆一次。
+     *
+     * @return 被换下的旧 client,由调用方在**锁外** close(close 可能同步回调 onClose)
      */
-    private fun replaceClient(key: String) {
+    private fun replaceClient(key: String): WebSocketClientImpl? {
         val old = webSocketClient
         webSocketClient = null
-        if (old != null) {
-            old.markSuperseded()
-            try { old.close() } catch (_: Exception) {}
-        }
+        old?.markSuperseded()
         spawnNewClient(key)
+        return old
     }
 
     /**
@@ -427,16 +428,15 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      */
     private fun armHandshakeWatchdog(client: WebSocketClientImpl, key: String) {
         handshakeWatchdog.register(handshakeWatchdogId, handshakeTimeoutMs) { _ ->
-            // 先在锁内判定是否真要 fire,fire 决策与事件 emit 分离避免持锁
+            // 锁内只做判定;close 放锁外 —— 握手阶段 close 会同步回调 onClose → emit。
+            // 判定与 close 之间 client 若被换下也无妨:它本就该关,收场不作数
             val fired: Boolean = synchronized(syncJWE) {
                 val s = state
-                if (s is EngineState.Connecting && s.key == key && webSocketClient === client) {
-                    client.close()
-                    true
-                } else false
+                s is EngineState.Connecting && s.key == key && webSocketClient === client
             }
             if (fired) {
                 ImcEvents.emit(ImcEvent.HandshakeWatchdogFired(key, handshakeTimeoutMs))
+                client.close()
             }
         }
     }
@@ -475,28 +475,32 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     }
 
     override fun engineOff() {
-        // 锁内推进状态机 + 关 client;锁外做 clear 缓存 / 通知监听 / dispose autoConnect,
-        // 避免长操作 / 用户回调阻塞 syncJWE。
+        // 锁内只推进状态机并摘下 client;关 client / clear 缓存 / 通知监听 / dispose autoConnect
+        // 都在锁外,避免长操作 / 用户回调 / 事件 emit(stopAutoConnect 会 emit)阻塞 syncJWE。
+        var client: WebSocketClientImpl? = null
         val shouldNotify = synchronized(syncJWE) {
             if (state == EngineState.Idle) return@synchronized false
             handshakeWatchdog.unregister(handshakeWatchdogId)
             fastResumeWatchdog.unregister(fastResumeProbeId)
             state = EngineState.Closing
-            val client = webSocketClient
-            // 顺序:解绑 listener → 停 timer → 停 auto-connect → close socket → 释放
-            // 解绑 listener 在 close 之前,onClose 回来时 listener=null 不会再触发 handleAfterClose
-            client?.javaWebSocketListener = null
-            client?.stopConnectionLostTimerEx(false)
-            client?.stopAutoConnect()
-            // 必须用 closeAndTerminate 而非 close():engineOff 是终止意图,需要标记 isClosed=true
-            // 阻止 onClose/onError 把 autoConnect 重新唤醒。普通 close() 现在故意不设 isClosed,
-            // 是为了让握手 watchdog / 心跳判死 / URL 切换 都能走标准抢救链。
-            client?.closeAndTerminate()
+            client = webSocketClient
+            // 锁内先标记换下:从此刻起它的迟到回调(含握手中途才完成的 onOpen)一律不作数
+            client?.markSuperseded()
             webSocketClient = null
             state = EngineState.Idle
             true
         }
         if (!shouldNotify) return
+        client?.let { c ->
+            // 顺序:解绑 listener → 停 timer → 停 auto-connect → close socket
+            c.javaWebSocketListener = null
+            c.stopConnectionLostTimerEx(false)
+            c.stopAutoConnect()
+            // 必须用 closeAndTerminate 而非 close():engineOff 是终止意图,需要标记 isClosed=true
+            // 阻止 onClose/onError 把 autoConnect 重新唤醒。普通 close() 现在故意不设 isClosed,
+            // 是为了让握手 watchdog / 心跳判死 / URL 切换 都能走标准抢救链。
+            c.closeAndTerminate()
+        }
         // 真正的会话终止才回收重发池:逐条 MessageEvicted(SESSION_END),业务据此改状态 / 留待下次登录补发。
         // 切 URL / 强制重建那些路径不走 engineOff,因此不会误伤池子。
         try { resendPool.endSession() } catch (e: Exception) { e.printStackTrace() }
@@ -598,7 +602,10 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
     // ── 快速恢复 ─────────────────────────────────────────────────────────
 
-    private val fastResumeWatchdog = RapidResponseForceV4(clock = elapsedClock)
+    private val fastResumeWatchdog = RapidResponseForceV4(
+        clock = elapsedClock,
+        maxWaitSliceMs = RapidResponseForceV4.WATCHDOG_WAIT_SLICE_MS,
+    )
     private val fastResumeProbeId = "fast-resume-probe"
 
     /** 上次快速恢复时刻(elapsedClock),去抖用;syncJWE 内读写 */
@@ -636,10 +643,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             stateDesc = s.toString()
             action = when (s) {
                 EngineState.Idle, EngineState.Closing -> ImcEvent.FastResume.Action.IDLE
-                // 等退避:autoConnect 已立即发起 / 已有尝试在途 → 交给它;没人管(WAIT_USER 中止、
-                // FAILOVER 被接管等)→ 引擎自己起
+                // 等退避:autoConnect 已立即发起 → 交给它;否则(WAIT_USER 中止、FAILOVER 被接管、
+                // 实现不支持 onResume 等)引擎自己起。不看 isActive():它可能是陈旧的「在途」
+                // 标记,只剩 attempt 看门狗兜底,交给它等于回前台白等最多 30s
                 is EngineState.Reconnecting ->
-                    if (kicked || autoConnect.isActive()) ImcEvent.FastResume.Action.KICK_AUTO_CONNECT
+                    if (kicked) ImcEvent.FastResume.Action.KICK_AUTO_CONNECT
                     else ImcEvent.FastResume.Action.REPLACE
                 is EngineState.Connecting ->
                     if (force || c == null || now - c.createdAt > policy.staleAttemptMs) {
@@ -716,6 +724,11 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      * 定时器到 IMMEDIATE(带 500ms 去抖),不再重排满退避、也不会被连环 poke 推迟 fire。
      */
     private fun kickReconnect() {
+        // 引擎未启动 / 已 engineOff:没有会话要恢复。历史上这里照样戳 autoConnect,它会排定时 →
+        // 到点 restart 被 Idle 守卫挡掉 → 等 30s attempt 看门狗再排 → 循环,登录前 / 登出后
+        // 网络回调一来就无限空转(AlarmManager 下还会反复唤醒设备)
+        val s = state
+        if (s == EngineState.Idle || s == EngineState.Closing) return
         val client = webSocketClient
         when {
             client == null -> autoConnect.resetStartAutoConnect()
@@ -811,9 +824,22 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         @Volatile
         private var superseded = false
 
+        /** 本次连接的死亡已经上报过(onError / onClose 先到者),见 [onClose] 的 #7 */
+        @Volatile
+        private var deathReported = false
+
         // ── 协议层(java-websocket 回调)──────────────────────────────
 
         override fun onOpen(handshakedata: ServerHandshake?) {
+            // 已被换下 / 已 engineOff 的 client 迟到建连:Java-WebSocket 的 close() 在 writeThread
+            // 建立前(DNS / TCP / TLS / 发升级请求期间)是 no-op,run() 中途也不查是否被关,
+            // 所以换下或终止时卡在这些阶段的 client 之后照样会走到这里。不拦的话它会把引擎推到
+            // Connected、撤掉当前 client 的握手看门狗、停掉抢救,留下一条没人管的僵尸 socket
+            // (engineOff 后还会带着心跳一直在线)。此刻 writeThread 已在,close 能生效。
+            if (superseded || isClosed) {
+                super.close()
+                return
+            }
             // A5: cert pinning 校验。失败立即 close,不进入正常 onOpen 路径。
             //   pin 失败 → emit TlsFailure(PIN_FAILURE) + close() → 走 onClose → 标准抢救链。
             if (certificatePinner != null && !verifyCertificatePin()) {
@@ -910,6 +936,15 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 ImcEvents.emit(ImcEvent.ConnectionClosed(code, reason, remote))
                 return
             }
+            // #7:Java-WebSocket 在连接失败 / 读写异常时先回调 onError 再回调 onClose,onError 已经
+            // 上报过这次死亡(ConnectionLost / connectionLost / 推进状态机 / 唤醒 autoConnect),
+            // 这里只留关闭码的观测,不再按「非正常关闭」重报一遍
+            if (deathReported) {
+                ImcEvents.emit(ImcEvent.ConnectionClosed(code, reason, remote))
+                stopConnectionLostTimerEx(true)
+                return
+            }
+            deathReported = true
             val isRemoteNormalClose = remote &&
                 (code == CloseFrame.NORMAL || code == CloseFrame.GOING_AWAY)
             if (isRemoteNormalClose) {
@@ -927,6 +962,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             // N4:已被引擎换下,同 onClose
             if (superseded) return
             markFailedAddressIfConnectError(ex)
+            if (!isClosed) deathReported = true
             javaWebSocketListener?.onError(ex)
             if (isClosed) return
             stopConnectionLostTimerEx(true)
@@ -995,6 +1031,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             super.connect()
             synchronized(syncConnectionLost) {
                 isClosed = false
+                deathReported = false
             }
         }
 
