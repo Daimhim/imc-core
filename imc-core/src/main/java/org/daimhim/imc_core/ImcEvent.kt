@@ -7,7 +7,7 @@ package org.daimhim.imc_core
  * 而不是文本日志字符串。事件总线见 [ImcEvents]。
  *
  * **不是文本日志**:这里没有 "TextLog" 兜底。每个事件都是明确的状态变化或度量结果,
- * 字段全部结构化。调试用文本输出走独立的 [IMCLog] 通路,跟事件系统解耦。
+ * 字段全部结构化。imc-core 本身不打文本日志,落盘 / 上报由订阅方把事件转成自己的日志格式。
  *
  * 分类参考 [Category];每个具体事件子类都标明自己属于哪一类,UI 上做筛选用。
  *
@@ -41,14 +41,15 @@ sealed class ImcEvent {
     /**
      * imc-core 内部捕获到的异常。
      *
-     * 替代之前散落各处的 `IMCLog.e(e, "...")` 调用。**这不是业务错误,业务侧通常不需要响应**,
-     * 但应当作为运行健康度信号上报到监控:出现频率高意味着某条假设被打破。
+     * **这不是业务错误,业务侧通常不需要响应**,但应当作为运行健康度信号上报到监控:
+     * 出现频率高意味着某条假设被打破。内核里不再有 `printStackTrace`,吞掉的异常都走这里。
      *
      * 来源典型场景:
      *  - [ImcEvents.emit] 时 sink.onEvent 抛了异常
      *  - 持久化缓存写盘失败 / blob 解析失败
      *  - 探测线程被中断
-     *  - 自定义回调(KeyProvider / OnFailoverHandler / V2IMCListener)抛了异常
+     *  - 自定义回调(KeyProvider / OnFailoverHandler / V2IMCSocketListener / NetReport listener)抛了异常
+     *  - 配置错误(如 onChangeMode 传了未注册的心跳档位)
      */
     data class InternalError(
         val site: String,                      // 出错位置标识,如 "ImcEvents.emit" / "FileMessageCache.flushToFile"
@@ -179,12 +180,78 @@ sealed class ImcEvent {
             KICK_AUTO_CONNECT,
             /** 引擎未启动,无事可做 */
             IDLE,
+            /** 距上次快速恢复不足 [FastResumePolicy.debounceMs],本次忽略(前后台抖动) */
+            DEBOUNCED,
         }
     }
 
-    /** 回前台探活超时,连接判死并重建 */
-    data class FastResumeProbeFailed(
+    /**
+     * 回前台探活([FastResume.Action.PROBE])的结论,超时到点时判定。
+     *
+     * @param result 见 [Result]
+     * @param timeoutMs 探活窗口
+     * @param inboundAfterMs 探活发出后最近一次入站距发出时刻多久;没收到为 null
+     */
+    data class FastResumeProbeFinished(
+        val result: Result,
         val timeoutMs: Long,
+        val inboundAfterMs: Long? = null,
+        override val timestamp: Long = System.currentTimeMillis(),
+    ) : ImcEvent() {
+        override val category get() = Category.ENGINE
+
+        enum class Result {
+            /** 窗口内收到了入站,连接是活的 */
+            ALIVE,
+            /** 窗口内没有任何入站,判死并重建 */
+            DEAD,
+            /** 窗口内连接已断 / 被换掉 / engineOff,探活作废 */
+            ABANDONED,
+        }
+    }
+
+    /**
+     * 外部「催重连」入口([IEngine.onNetworkChange] / [IEngine.makeConnection] / send 失败)的处置。
+     *
+     * 回答「网络切了 / 点了重连,内核到底做了什么」。
+     *
+     * @param trigger `network` / `makeConnection` / `send`
+     * @param engineState 处置时的引擎状态
+     */
+    data class ReconnectKicked(
+        val trigger: String,
+        val engineState: String,
+        val action: Action,
+        override val timestamp: Long = System.currentTimeMillis(),
+    ) : ImcEvent() {
+        override val category get() = Category.ENGINE
+
+        enum class Action {
+            /** 引擎未启动 / 已 engineOff,不处理 */
+            IGNORED_IDLE,
+            /** 没有当前 client(等待重连中):让 autoConnect 压缩退避立即重连 */
+            KICK_AUTO_CONNECT,
+            /** 当前 client 未打开(半开 / 在途):停心跳并催 autoConnect */
+            RESET_CLIENT,
+            /** 连接健康,不动 */
+            HEALTHY,
+        }
+    }
+
+    /**
+     * 已被换下 / 已 engineOff 的旧 client 迟到的回调,内核已丢弃,不影响当前连接。
+     *
+     * 换 client 时旧的不等收场(可能卡在 DNS / TLS 里),它之后回来的 onOpen / onClose / onError
+     * 都会落到这里。`callback=onOpen` 表示旧 client 迟到建连,内核已把它关掉(否则会成为僵尸连接)。
+     *
+     * @param callback `onOpen` / `onClose` / `onError`
+     * @param terminated true = 会话已 engineOff;false = 被新 client 换下
+     * @param detail 关闭码 / 异常类等补充信息
+     */
+    data class StaleClientCallback(
+        val callback: String,
+        val terminated: Boolean,
+        val detail: String? = null,
         override val timestamp: Long = System.currentTimeMillis(),
     ) : ImcEvent() {
         override val category get() = Category.ENGINE
@@ -474,6 +541,30 @@ sealed class ImcEvent {
     }
 
     data class SurveillanceStopped(
+        override val timestamp: Long = System.currentTimeMillis(),
+    ) : ImcEvent() {
+        override val category get() = Category.NETWORK
+    }
+
+    /**
+     * [DnsCache] 实时解析失败,回退到上次成功的结果(仍在 stale 窗口内)。
+     * 连接还能建,但说明 DNS 在抖;持续出现要查 DNS。
+     *
+     * @param staleAgeMs 回退用的缓存已经过期多久
+     */
+    data class DnsStaleFallback(
+        val host: String,
+        val errorMessage: String?,
+        val staleAgeMs: Long,
+        override val timestamp: Long = System.currentTimeMillis(),
+    ) : ImcEvent() {
+        override val category get() = Category.NETWORK
+    }
+
+    /** 某个地址建连失败(TCP 层),在 [DnsCache] 里冷却,下次尝试换下一个地址 */
+    data class DnsAddressCooled(
+        val address: String,
+        val cooldownMs: Long,
         override val timestamp: Long = System.currentTimeMillis(),
     ) : ImcEvent() {
         override val category get() = Category.NETWORK

@@ -277,7 +277,7 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
                 timer.unregister(BURST_TASK_ID)
                 // 已经在 prober.probeBurst 里跑的那一次也一并中断,避免"关了还在探"的尾巴。
                 // cancelBurst 默认实现退化为 cancel,自定义 prober 可精细区分 baseline / burst。
-                try { prober?.cancelBurst() } catch (e: Exception) { e.printStackTrace() }
+                try { prober?.cancelBurst() } catch (e: Exception) { ImcEvents.internalError("NetProber.cancelBurst", e) }
             }
             new.burstEnabled && old.burstEnabled && new.burstIntervalMs != old.burstIntervalMs -> {
                 // 周期变了但仍开着 → 按新周期重排下一次。
@@ -517,7 +517,7 @@ class DefaultNetSurveillance private constructor(builder: Builder) : NetSurveill
                 try {
                     it.onReport(next)
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    ImcEvents.internalError("NetReportListener.onReport", e)
                 }
             }
             // 全局事件总线

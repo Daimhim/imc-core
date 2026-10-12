@@ -60,6 +60,7 @@ class DnsCache(
         } catch (e: UnknownHostException) {
             if (cached != null && now < cached.staleUntilMs) {
                 // fresh 失败 + stale 在 stale-window 内 → 兜底用上次的 IP
+                ImcEvents.emit(ImcEvent.DnsStaleFallback(host, e.message, now - cached.freshUntilMs))
                 return preferHealthy(cached.addrs, now)
             }
             throw e
@@ -78,6 +79,7 @@ class DnsCache(
      */
     fun markFailed(address: InetAddress, cooldownMs: Long = FAILED_COOLDOWN_MS) {
         failedUntil[address] = clock() + cooldownMs
+        ImcEvents.emit(ImcEvent.DnsAddressCooled(address.hostAddress ?: address.toString(), cooldownMs))
     }
 
     /** 冷却中的地址排后(稳定排序,保留解析器给的优先级);冷却过期的顺手清掉 */

@@ -8,8 +8,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * **职责**:imc-core 内部把运行时状态变化 emit 出去,上层(监控 UI / 业务上报 /
  * 自动化测试)通过 [subscribe] 订阅并消费。
  *
- * **不是文本日志**:这里只走结构化事件,文本日志见 [IMCLog]。两套系统并行,
- * 互不依赖,避免日志格式约束事件结构。
+ * **不是文本日志**:这里只走结构化事件,imc-core 不打文本日志;订阅方按需转成自己的日志格式。
  *
  * **线程**:
  *  - [subscribe] / [unsubscribe] 任意线程
@@ -17,8 +16,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  *  - Sink 实现必须自己保证线程安全;UI 渲染要切到主线程
  *
  * **回调契约**:sink.onEvent **不应阻塞 / 不应抛异常**;长操作请自行排到独立线程。
- * 抛出的异常会被吞掉(写到 [IMCLog] 一行)以避免影响 imc-core 的关键路径,
- * 但**不会**重试或保留事件;sink 想要"全量不丢"应自行做持久化。
+ * 抛出的异常会被吞掉(转成一条 [ImcEvent.InternalError] 分发给其它 sink)以避免影响
+ * imc-core 的关键路径,但**不会**重试或保留事件;sink 想要"全量不丢"应自行做持久化。
  *
  * **零订阅零开销**:[sinks] 是 CopyOnWriteArrayList,空时 emit 只是一次 isEmpty 判断。
  */
@@ -82,6 +81,12 @@ object ImcEvents {
                 }
             }
         }
+    }
+
+    /** 内部吞掉的异常统一上报为 [ImcEvent.InternalError],取代 `printStackTrace` */
+    @JvmStatic
+    internal fun internalError(site: String, e: Throwable) {
+        emit(ImcEvent.InternalError(site = site, errorClass = e.javaClass.simpleName, message = e.message))
     }
 }
 

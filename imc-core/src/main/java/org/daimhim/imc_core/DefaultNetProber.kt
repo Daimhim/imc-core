@@ -88,7 +88,7 @@ class DefaultNetProber(
                 try {
                     callback(report)
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    ImcEvents.internalError("NetProber.callback", e)
                 }
             }
         } catch (rej: java.util.concurrent.RejectedExecutionException) {
@@ -108,7 +108,7 @@ class DefaultNetProber(
                 )
             )
             try { callback(rep) }
-            catch (e: Exception) { e.printStackTrace() }
+            catch (e: Exception) { ImcEvents.internalError("NetProber.callback", e) }
             return
         }
         inflight.getAndSet(future)?.cancel(true)
@@ -130,13 +130,13 @@ class DefaultNetProber(
                 executor.submit {
                     val report = BurstProbeReport(target, 0, 0, emptyList(), System.currentTimeMillis())
                     emitBurstFinished(report)
-                    try { callback(report) } catch (e: Exception) { e.printStackTrace() }
+                    try { callback(report) } catch (e: Exception) { ImcEvents.internalError("NetProber.callback", e) }
                 }
             } catch (_: java.util.concurrent.RejectedExecutionException) {
                 // 退化为同步,跟 probe 的退路一致
                 val report = BurstProbeReport(target, 0, 0, emptyList(), System.currentTimeMillis())
                 emitBurstFinished(report)
-                try { callback(report) } catch (e: Exception) { e.printStackTrace() }
+                try { callback(report) } catch (e: Exception) { ImcEvents.internalError("NetProber.callback", e) }
             }
             return
         }
@@ -150,7 +150,7 @@ class DefaultNetProber(
                 if (addrs.isEmpty()) {
                     val report = BurstProbeReport(target, attempts, 0, emptyList(), System.currentTimeMillis())
                     emitBurstFinished(report)
-                    try { callback(report) } catch (e: Exception) { e.printStackTrace() }
+                    try { callback(report) } catch (e: Exception) { ImcEvents.internalError("NetProber.callback", e) }
                     return@submit
                 }
                 // 找一个能连的地址。如果都连不通,burst 全失败,successes=0。
@@ -160,7 +160,7 @@ class DefaultNetProber(
                 if (chosen == null) {
                     val report = BurstProbeReport(target, attempts, 0, emptyList(), System.currentTimeMillis())
                     emitBurstFinished(report)
-                    try { callback(report) } catch (e: Exception) { e.printStackTrace() }
+                    try { callback(report) } catch (e: Exception) { ImcEvents.internalError("NetProber.callback", e) }
                     return@submit
                 }
                 val rtts = ArrayList<Long>(attempts)
@@ -179,7 +179,7 @@ class DefaultNetProber(
                 }
                 val report = BurstProbeReport(target, attempts, successes, rtts, System.currentTimeMillis())
                 emitBurstFinished(report)
-                try { callback(report) } catch (e: Exception) { e.printStackTrace() }
+                try { callback(report) } catch (e: Exception) { ImcEvents.internalError("NetProber.callback", e) }
             }
         } catch (rej: java.util.concurrent.RejectedExecutionException) {
             ImcEvents.emit(ImcEvent.InternalError(
@@ -190,7 +190,7 @@ class DefaultNetProber(
             val rep = BurstProbeReport(target, attempts, 0, emptyList(), System.currentTimeMillis())
             emitBurstFinished(rep)
             try { callback(rep) }
-            catch (e: Exception) { e.printStackTrace() }
+            catch (e: Exception) { ImcEvents.internalError("NetProber.callback", e) }
             return
         }
         inflightBurst.getAndSet(future)?.cancel(true)

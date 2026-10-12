@@ -156,10 +156,13 @@ class FastResumeTest {
         assertTrue(waitUntil { engine.engineState() == IEngineState.ENGINE_OPEN })
 
         engine.backgroundThenForeground()
-        Thread.sleep(1_000)                           // 越过探活超时
+        // 等到探活超时判定
+        assertTrue(waitUntil { events.any { it is ImcEvent.FastResumeProbeFinished } })
 
         assertEquals(listOf(ImcEvent.FastResume.Action.PROBE), fastResumeActions())
-        assertTrue(events.none { it is ImcEvent.FastResumeProbeFailed })
+        val probe = events.filterIsInstance<ImcEvent.FastResumeProbeFinished>().single()
+        assertEquals(ImcEvent.FastResumeProbeFinished.Result.ALIVE, probe.result)
+        assertTrue("应记下探活后的入站", probe.inboundAfterMs != null)
         assertEquals("pong 回来了,不得重建", 1, server.opens.get())
     }
 
@@ -173,7 +176,9 @@ class FastResumeTest {
 
         engine.backgroundThenForeground()
 
-        assertTrue("探活超时应判死", waitUntil { events.any { it is ImcEvent.FastResumeProbeFailed } })
+        assertTrue("探活超时应判死", waitUntil { events.any {
+            it is ImcEvent.FastResumeProbeFinished && it.result == ImcEvent.FastResumeProbeFinished.Result.DEAD
+        } })
         assertTrue("应重建", waitUntil { server.opens.get() == 2 })
     }
 
@@ -243,7 +248,11 @@ class FastResumeTest {
         engine.backgroundThenForeground()
         engine.backgroundThenForeground()             // Activity 来回切
 
-        assertEquals(1, fastResumeActions().size)
+        assertEquals(
+            "第二次被去抖,且有记录",
+            listOf(ImcEvent.FastResume.Action.KEEP, ImcEvent.FastResume.Action.DEBOUNCED),
+            fastResumeActions(),
+        )
     }
 
     @Test

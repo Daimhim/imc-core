@@ -29,8 +29,8 @@ import java.nio.ByteBuffer
  * 它迟到的收场回调不推进状态机。
  */
 internal sealed class EngineState {
-    object Idle : EngineState()
-    object Closing : EngineState()
+    object Idle : EngineState() { override fun toString() = "Idle" }
+    object Closing : EngineState() { override fun toString() = "Closing" }
     data class Connecting(val key: String) : EngineState()
     data class Connected(val key: String) : EngineState()
     data class Reconnecting(val key: String) : EngineState()
@@ -48,6 +48,9 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     private companion object {
         const val TRIGGER_FOREGROUND = "foreground"
         const val TRIGGER_RECONNECT_NOW = "reconnectNow"
+        const val KICK_NETWORK = "network"
+        const val KICK_MAKE_CONNECTION = "makeConnection"
+        const val KICK_SEND = "send"
     }
 
     // ── 配置 ────────────────────────────────────────────────────────────
@@ -102,8 +105,15 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      * 决定本次重连用的 url:优先 KeyProvider(实时算),没设 Provider 就用上次 engineOn 缓存的 key。
      * 两者都为空说明 engine 还没启动过 / 已 engineOff 过,跳过。
      */
-    private fun resolveReconnectKey(): String? =
-        keyProvider?.runCatching { provide() }?.getOrNull() ?: state.targetKey()
+    private fun resolveReconnectKey(): String? {
+        val provided = keyProvider?.let { p ->
+            try { p.provide() } catch (e: Exception) {
+                ImcEvents.internalError("IKeyProvider.provide", e)
+                null
+            }
+        }
+        return provided ?: state.targetKey()
+    }
 
     init {
         autoConnect.setReconnector(autoConnectReconnector)
@@ -157,22 +167,16 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                     httpStatusMessage = handshakedata?.httpStatusMessage,
                 )
             )
-            val transitionTo: String? = synchronized(syncJWE) {
+            val transition: ImcEvent.EngineStateTransition? = synchronized(syncJWE) {
                 val key = state.targetKey()
                 val prev = state
                 if (key != null) state = EngineState.Connected(key)
-                if (state !== prev) state.toString() else null
+                if (state !== prev) {
+                    ImcEvent.EngineStateTransition(prev.toString(), state.toString(), "onOpen")
+                } else null
             }
-            if (transitionTo != null) {
-                // emit 在锁外:transitionTo 已经捕获了新状态字符串,这里不再触碰 state
-                ImcEvents.emit(
-                    ImcEvent.EngineStateTransition(
-                        from = "Connecting/Reconnecting",
-                        to = transitionTo,
-                        reason = "onOpen",
-                    )
-                )
-            }
+            // emit 在锁外:状态字符串已在锁内捕获
+            transition?.let { ImcEvents.emit(it) }
             imcStatusListener?.connectionSucceeded()
         }
 
@@ -337,8 +341,10 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             keyChangeEvent = if (oldKey != key) ImcEvent.EngineKeyChanged(oldKey, key) else null
             val replace = shouldReplace(key, mode)
             superseded = if (replace) replaceClient(key) else null
-            transition = if (replace && prev !is EngineState.Reconnecting && prev != EngineState.Idle) {
-                ImcEvent.EngineStateTransition(prev.toString(), state.toString(), "replace:$reason")
+            // 每次起新 client 都记一条(含 Idle → Connecting 首连、Reconnecting → Connecting 重试),
+            // reason 带上是谁发起的(engineOn / autoConnect:SCHEDULED / fastResume:foreground …)
+            transition = if (replace) {
+                ImcEvent.EngineStateTransition(prev.toString(), state.toString(), reason)
             } else null
         }
         // 旧 client 已 markSuperseded,迟到回调不作数;close 可能同步回调 onClose 并 emit,放锁外
@@ -503,10 +509,10 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
         // 真正的会话终止才回收重发池:逐条 MessageEvicted(SESSION_END),业务据此改状态 / 留待下次登录补发。
         // 切 URL / 强制重建那些路径不走 engineOff,因此不会误伤池子。
-        try { resendPool.endSession() } catch (e: Exception) { e.printStackTrace() }
+        try { resendPool.endSession() } catch (e: Exception) { ImcEvents.internalError("engineOff.resendPool", e) }
         // 释放 autoConnect 持有的外部资源(典型:NetSurveillance 的 listener),避免泄漏。
-        // 如果用户在 engineOff 后又调 engineOn 复用同一 engine,需要新建 builder 重新注入 autoConnect。
-        try { autoConnect.dispose() } catch (e: Exception) { e.printStackTrace() }
+        // 之后业务若在同一个引擎上再 engineOn,engineOnInternal 会调 autoConnect.revive() 恢复。
+        try { autoConnect.dispose() } catch (e: Exception) { ImcEvents.internalError("engineOff.autoConnect.dispose", e) }
         // 业务侧主动 engineOff 也应该收到一次明确的 connectionClosed 回调 ——
         // 由于 listener 在 close 之前已被解绑,onClose 不会回到 V2JWE 的 javaWebsocketListener,
         // 这里走快路径补一次,避免业务漏判终止信号。
@@ -551,7 +557,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             inSession = state != EngineState.Idle && state != EngineState.Closing
         }
         val result = resendPool.sendOrQueue(bizId, message, client?.poolWriter, allowQueue = inSession)
-        if (result != SendResult.SENT && inSession) makeConnection()
+        if (result != SendResult.SENT && inSession) kickReconnect(KICK_SEND)
         return result
     }
 
@@ -579,8 +585,18 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         val prev = pendingMode
         // 不管 webSocketClient 是否已建, 都记下这次调用 — 下次 spawnNewClient 会用它
         pendingMode = mode
-        heartbeatMode[mode]?.let {
-            webSocketClient?.onChangeMode(it)
+        val linkNative = heartbeatMode[mode]
+        if (linkNative != null) {
+            webSocketClient?.onChangeMode(linkNative)
+        } else {
+            // 配置错误:没注册这个档位,心跳维持原档位。前后台判定照常走
+            ImcEvents.emit(
+                ImcEvent.InternalError(
+                    site = "V2JavaWebEngine.onChangeMode",
+                    errorClass = "UnknownHeartbeatMode",
+                    message = "未注册的心跳档位 mode=$mode,已注册 ${heartbeatMode.keys}",
+                )
+            )
         }
         if (prev != mode) {
             ImcEvents.emit(ImcEvent.HeartbeatModeChanged(prev, mode))
@@ -628,7 +644,12 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                     false
                 }
             }
-            if (debounced) return
+            if (debounced) {
+                ImcEvents.emit(
+                    ImcEvent.FastResume(trigger, state.toString(), ImcEvent.FastResume.Action.DEBOUNCED)
+                )
+                return
+            }
         }
         // 先让 autoConnect 清退避;正在等下次重连时它会不经调度器立即发起
         val kicked = autoConnect.onResume()
@@ -690,23 +711,34 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             FastResumePolicy.Probe.NONE -> return
         }
         fastResumeWatchdog.register(fastResumeProbeId, policy.probeTimeoutMs) { _ ->
-            val dead = synchronized(syncJWE) {
-                state is EngineState.Connected && webSocketClient === client &&
-                    client.lastInboundAt < startedAt
+            val lastInbound = client.lastInboundAt
+            val result = synchronized(syncJWE) {
+                when {
+                    state !is EngineState.Connected || webSocketClient !== client ->
+                        ImcEvent.FastResumeProbeFinished.Result.ABANDONED
+                    lastInbound < startedAt -> ImcEvent.FastResumeProbeFinished.Result.DEAD
+                    else -> ImcEvent.FastResumeProbeFinished.Result.ALIVE
+                }
             }
-            if (dead) {
-                ImcEvents.emit(ImcEvent.FastResumeProbeFailed(policy.probeTimeoutMs))
+            ImcEvents.emit(
+                ImcEvent.FastResumeProbeFinished(
+                    result = result,
+                    timeoutMs = policy.probeTimeoutMs,
+                    inboundAfterMs = (lastInbound - startedAt).takeIf { it >= 0 },
+                )
+            )
+            if (result == ImcEvent.FastResumeProbeFinished.Result.DEAD) {
                 restartAsync(DispatchMode.REPLACE, "fastResume:probe-timeout")
             }
         }
     }
 
     override fun onNetworkChange(networkState: Int) {
-        kickReconnect()
+        kickReconnect(KICK_NETWORK)
     }
 
     override fun makeConnection() {
-        kickReconnect()
+        kickReconnect(KICK_MAKE_CONNECTION)
     }
 
     /**
@@ -723,18 +755,25 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
      * 等待重连期间的 reset 语义见 ProgressiveAutoConnect.resetStartAutoConnect:压缩 pending
      * 定时器到 IMMEDIATE(带 500ms 去抖),不再重排满退避、也不会被连环 poke 推迟 fire。
      */
-    private fun kickReconnect() {
+    private fun kickReconnect(trigger: String) {
         // 引擎未启动 / 已 engineOff:没有会话要恢复。历史上这里照样戳 autoConnect,它会排定时 →
         // 到点 restart 被 Idle 守卫挡掉 → 等 30s attempt 看门狗再排 → 循环,登录前 / 登出后
         // 网络回调一来就无限空转(AlarmManager 下还会反复唤醒设备)
         val s = state
-        if (s == EngineState.Idle || s == EngineState.Closing) return
         val client = webSocketClient
-        when {
-            client == null -> autoConnect.resetStartAutoConnect()
-            !client.isOpen -> client.resetStartAutoConnect()   // 半开/未连:停心跳 + 催重连(历史行为)
+        val action = when {
+            s == EngineState.Idle || s == EngineState.Closing -> ImcEvent.ReconnectKicked.Action.IGNORED_IDLE
+            client == null -> ImcEvent.ReconnectKicked.Action.KICK_AUTO_CONNECT
+            !client.isOpen -> ImcEvent.ReconnectKicked.Action.RESET_CLIENT
             // 健康:什么都不做。没有退避可重置;历史上这里走 resetStartAutoConnect → stop+start,
             // 会刷新 flapping 会话起点(#6)
+            else -> ImcEvent.ReconnectKicked.Action.HEALTHY
+        }
+        ImcEvents.emit(ImcEvent.ReconnectKicked(trigger, s.toString(), action))
+        when (action) {
+            ImcEvent.ReconnectKicked.Action.KICK_AUTO_CONNECT -> autoConnect.resetStartAutoConnect()
+            // 半开/未连:停心跳 + 催重连(历史行为)
+            ImcEvent.ReconnectKicked.Action.RESET_CLIENT -> client!!.resetStartAutoConnect()
             else -> Unit
         }
     }
@@ -838,6 +877,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             // (engineOff 后还会带着心跳一直在线)。此刻 writeThread 已在,close 能生效。
             if (superseded || isClosed) {
                 super.close()
+                ImcEvents.emit(ImcEvent.StaleClientCallback("onOpen", terminated = isClosed, detail = "closed"))
                 return
             }
             // A5: cert pinning 校验。失败立即 close,不进入正常 onOpen 路径。
@@ -932,8 +972,13 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             // 远端关闭: 区分 NORMAL/GOING_AWAY 与其他
             // N4:已被引擎换下 —— 迟到的收场不推进状态机、不唤醒 autoConnect。
             // 必须挡在 javaWebSocketListener 派发之前,否则 handleAfterClose 已经跑完。
+            // 不发 ConnectionClosed:那是「当前连接断了」的语义,旧 client 的收场会误导排查
             if (superseded) {
-                ImcEvents.emit(ImcEvent.ConnectionClosed(code, reason, remote))
+                ImcEvents.emit(
+                    ImcEvent.StaleClientCallback(
+                        "onClose", terminated = false, detail = "code=$code remote=$remote reason=$reason",
+                    )
+                )
                 return
             }
             // #7:Java-WebSocket 在连接失败 / 读写异常时先回调 onError 再回调 onClose,onError 已经
@@ -960,7 +1005,14 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
         override fun onError(ex: Exception) {
             // N4:已被引擎换下,同 onClose
-            if (superseded) return
+            if (superseded) {
+                ImcEvents.emit(
+                    ImcEvent.StaleClientCallback(
+                        "onError", terminated = false, detail = "${ex.javaClass.simpleName}: ${ex.message}",
+                    )
+                )
+                return
+            }
             markFailedAddressIfConnectError(ex)
             if (!isClosed) deathReported = true
             javaWebSocketListener?.onError(ex)

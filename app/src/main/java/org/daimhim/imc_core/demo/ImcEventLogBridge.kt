@@ -62,12 +62,16 @@ object ImcEventLogBridge {
         is ImcEvent.ConnectionLost -> LogStore.Level.ERROR
 
         is ImcEvent.HandshakeWatchdogFired,
-        is ImcEvent.FastResumeProbeFailed,
         is ImcEvent.AutoConnectAborted,
         is ImcEvent.AutoConnectProbeRequested,
         is ImcEvent.HeartbeatDegraded,
         is ImcEvent.MessageEvicted,
+        is ImcEvent.DnsStaleFallback,
+        is ImcEvent.DnsAddressCooled,
         is ImcEvent.FailoverInvoked -> LogStore.Level.WARN
+
+        is ImcEvent.FastResumeProbeFinished ->
+            if (e.result == ImcEvent.FastResumeProbeFinished.Result.DEAD) LogStore.Level.WARN else LogStore.Level.INFO
 
         // 关闭码区分:正常 (1000/1001) 是 INFO,其它是 WARN
         is ImcEvent.ConnectionClosed ->
@@ -100,8 +104,13 @@ object ImcEventLogBridge {
                 "[$cat] engineOff"
             is ImcEvent.FastResume ->
                 "[$cat] fastResume trigger=${e.trigger} action=${e.action} state=${e.engineState.trunc(60)} inboundIdle=${e.inboundIdleMs}ms"
-            is ImcEvent.FastResumeProbeFailed ->
-                "[$cat] fastResume probe timeout (${e.timeoutMs}ms) → replace"
+            is ImcEvent.FastResumeProbeFinished ->
+                "[$cat] fastResume probe ${e.result} (window=${e.timeoutMs}ms, inboundAfter=${e.inboundAfterMs}ms)"
+            is ImcEvent.ReconnectKicked ->
+                "[$cat] kick trigger=${e.trigger} action=${e.action} state=${e.engineState.trunc(60)}"
+            is ImcEvent.StaleClientCallback ->
+                "[$cat] stale client ${e.callback}" + (if (e.terminated) " (terminated)" else " (superseded)") +
+                    (e.detail?.let { ": ${it.trunc()}" } ?: "")
 
             // ── HEARTBEAT
             is ImcEvent.HeartbeatSent ->
@@ -154,6 +163,10 @@ object ImcEventLogBridge {
                 "[$cat] profile ${profileLabel(e.from)} → ${profileLabel(e.to)}"
             is ImcEvent.SurveillanceStarted -> "[$cat] surveillance started"
             is ImcEvent.SurveillanceStopped -> "[$cat] surveillance stopped"
+            is ImcEvent.DnsStaleFallback ->
+                "[$cat] DNS stale fallback host=${e.host} staleAge=${e.staleAgeMs}ms err=${e.errorMessage?.trunc()}"
+            is ImcEvent.DnsAddressCooled ->
+                "[$cat] DNS address cooled ${e.address} for ${e.cooldownMs}ms"
 
             // ── PROBE
             is ImcEvent.ProbeStarted ->

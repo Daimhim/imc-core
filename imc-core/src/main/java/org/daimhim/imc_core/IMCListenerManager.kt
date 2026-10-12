@@ -57,7 +57,7 @@ class IMCListenerManager  {
             try {
                 if (listener.onMessage(iEngine, text)) return
             } catch (e: Exception) {
-                e.printStackTrace()
+                ImcEvents.internalError("V2IMCSocketListener.onMessage", e)
             }
         }
     }
@@ -67,7 +67,7 @@ class IMCListenerManager  {
             try {
                 if (listener.onMessage(iEngine, bytes)) return
             } catch (e: Exception) {
-                e.printStackTrace()
+                ImcEvents.internalError("V2IMCSocketListener.onMessage", e)
             }
         }
     }

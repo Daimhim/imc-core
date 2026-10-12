@@ -465,7 +465,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             ReconnectAction.FAILOVER -> {
                 val handled = onFailover?.let {
                     try { it.onFailover() } catch (e: Exception) {
-                        e.printStackTrace(); false
+                        ImcEvents.internalError("OnFailoverHandler.onFailover", e); false
                     }
                 } ?: false
                 ImcEvents.emit(ImcEvent.FailoverInvoked(handledByApp = handled))
@@ -548,7 +548,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         // 编排层判定切备用接入点: 先让 App 接管, 若已处理则 SDK 不再调度本 URL 的重连
         if (action == ReconnectAction.FAILOVER && onFailover != null) {
             val handled = try { onFailover.onFailover() } catch (e: Exception) {
-                e.printStackTrace(); false
+                ImcEvents.internalError("OnFailoverHandler.onFailover", e); false
             }
             ImcEvents.emit(ImcEvent.FailoverInvoked(handledByApp = handled))
             if (handled) {
@@ -1046,7 +1046,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
                 webSocketClient?.reconnect()
             }
         }catch (e: Exception){
-            e.printStackTrace()
+            ImcEvents.internalError("IReconnector.restart", e)
         }
     }
 
