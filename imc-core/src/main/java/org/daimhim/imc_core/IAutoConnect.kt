@@ -34,6 +34,17 @@ interface IAutoConnect {
      */
     fun onConnectionEstablished() = stopAutoConnect()
 
+    /**
+     * 快速恢复(回前台 / [V2JavaWebEngine.reconnectNow]):清退避与快试额度;
+     * 正在等下次重连 → **不经调度器**立即发起;尝试在途 → 重置 attempt 超时兜底。
+     *
+     * @return true = 已立即发起一次重连尝试
+     */
+    fun onResume(): Boolean {
+        resetStartAutoConnect()
+        return false
+    }
+
     /** 当前是否正在抢救中(已被调度 / 在重连 / 在等下次),调试与状态判断用 */
     fun isActive(): Boolean = false
 
@@ -323,7 +334,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
      * abnormalDisconnectionAndAutomaticReconnection 的链路应该在 15s 内回归,30s 还没回就一定异常。
      */
     private val attemptTimeoutMs: Long = builder.attemptTimeoutMs.toLong()
-    private val attemptWatchdog = RapidResponseForceV4()
+    private val attemptWatchdog = RapidResponseForceV4(clock = builder.elapsedClock)
     private val attemptWatchdogId = "auto-attempt-watchdog"
 
     private val timeoutCall = object : Callable<Void> {
@@ -657,6 +668,37 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         if (wasActive) ImcEvents.emit(ImcEvent.AutoConnectAborted("stopAutoConnect"))
     }
 
+    override fun onResume(): Boolean {
+        var fireNow = false
+        var rearmWatchdog = false
+        synchronized(syncConnectionLost) {
+            // 回前台是新的起点:后台攒下的大退避、用光的快试额度、硬地板探测标记、
+            // 链路降级判定都作废(环境多半已变,且用户在等)
+            reconnectDelay = initReconnectDelay
+            consecutiveImmediateRetries = 0
+            probedForHardFloor = false
+            consecutiveAttemptTimeouts = 0
+            inLinkDegradedState = false
+            lastEffectiveAction = null
+            lastScheduledDelay = initReconnectDelay
+            if (isWaitingNextAutomaticConnection) {
+                timeoutScheduler.stop()
+                isWaitingNextAutomaticConnection = false
+                fireNow = true
+            } else if (isConnectingAutomatically) {
+                rearmWatchdog = true
+            }
+        }
+        if (fireNow) {
+            ImcEvents.emit(ImcEvent.AutoConnectAborted("resume:fire-now"))
+            // 直接发起,不经 timeoutScheduler(AlarmManager 在后台押后的闹钟不必再等)
+            startConnect()
+        } else if (rearmWatchdog) {
+            armAttemptWatchdog()
+        }
+        return fireNow
+    }
+
     override fun onConnectionEstablished() {
         synchronized(syncConnectionLost) {
             // flapping 记账的会话起点。只在真正建连时记 —— 历史挂在 stopAutoConnect 上,
@@ -931,6 +973,14 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
 
     private fun consultRecommend(): ReconnectAction? =
         surveillance?.current()?.recommend
+    /** (重)挂 attempt 超时兜底;同 id 覆盖,重挂即从现在重新计时 */
+    private fun armAttemptWatchdog() {
+        val effectiveTimeout = if (inLinkDegradedState) DEGRADED_ATTEMPT_TIMEOUT_MS else attemptTimeoutMs
+        attemptWatchdog.register(attemptWatchdogId, effectiveTimeout) { _ ->
+            onAttemptTimeout()
+        }
+    }
+
     private fun startConnect() {
         synchronized(syncConnectionLost) {
             if (isConnectingAutomatically) {
@@ -944,10 +994,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         // isConnectingAutomatically 永久 true 的引擎卡死(P0)。
         // A7: 链路降级状态下缩短到 10s,避免 13h 死期那种"每次 30s 等死"的浪费。
         // 锁外 register,避免与 reconnector 回调中可能持有的其它锁嵌套。
-        val effectiveTimeout = if (inLinkDegradedState) DEGRADED_ATTEMPT_TIMEOUT_MS else attemptTimeoutMs
-        attemptWatchdog.register(attemptWatchdogId, effectiveTimeout) { _ ->
-            onAttemptTimeout()
-        }
+        armAttemptWatchdog()
         // 当前 attempt 的目标 key,debug 用
         val targetKey: String? = try {
             webSocketClient?.uri?.toString()
@@ -1053,6 +1100,15 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
 
         // 心跳调度器
         internal var timeoutScheduler : ITimeoutScheduler = RRFTimeoutScheduler()
+
+        /** attempt 超时兜底的计时时钟,见 [setElapsedClock] */
+        internal var elapsedClock: () -> Long = { RapidResponseForceV4.nowMs() }
+
+        /**
+         * 内部计时时钟(毫秒,只用差值)。默认 nanoTime;Android 请注入 `SystemClock::elapsedRealtime`
+         * —— nanoTime 在设备休眠时不走,冻结前挂的兜底计时解冻后还要再等剩余时长。
+         */
+        fun setElapsedClock(clock: () -> Long) = apply { this.elapsedClock = clock }
 
         fun setTimeoutScheduler(timeoutScheduler: ITimeoutScheduler) : Builder {
             this.timeoutScheduler = timeoutScheduler

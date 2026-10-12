@@ -18,6 +18,13 @@ package org.daimhim.imc_core
  */
 class RapidResponseForceV4(
     private val MAX_TIMEOUT_TIME: Long = 5 * 1000,
+    /**
+     * 计时时钟(毫秒,只用差值)。默认 [nowMs](nanoTime)。
+     *
+     * Android 上 nanoTime 是 CLOCK_MONOTONIC,**设备休眠期间不走**:冻结前挂的 15s 看门狗,
+     * 解冻后还要再等剩余时长。注入 SystemClock.elapsedRealtime(含休眠)后,解冻即判到期。
+     */
+    private val clock: () -> Long = { nowMs() },
 ) {
     companion object{
         /**
@@ -70,7 +77,7 @@ class RapidResponseForceV4(
      */
     fun register(id: String, timeoutMs: Long = MAX_TIMEOUT_TIME, onTimeout: (id: String) -> Unit) {
         synchronized(lock) {
-            tasks[id] = Task(id, nowMs() + timeoutMs, onTimeout)
+            tasks[id] = Task(id, clock() + timeoutMs, onTimeout)
             ensureWorker()
             lock.notifyAll()
         }
@@ -124,7 +131,7 @@ class RapidResponseForceV4(
             // 1. 收割所有已到期任务
             val expired = ArrayList<Task>()
             synchronized(lock) {
-                val now = nowMs()
+                val now = clock()
                 val iter = tasks.entries.iterator()
                 while (iter.hasNext()) {
                     val task = iter.next().value
@@ -158,7 +165,7 @@ class RapidResponseForceV4(
                     workerThread = null
                     return
                 }
-                val now = nowMs()
+                val now = clock()
                 var nearest = Long.MAX_VALUE
                 for (task in tasks.values) {
                     val remaining = task.deadline - now

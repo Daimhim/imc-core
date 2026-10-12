@@ -45,12 +45,15 @@ private fun EngineState.targetKey(): String? = when (this) {
 
 class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
+    private companion object {
+        const val TRIGGER_FOREGROUND = "foreground"
+        const val TRIGGER_RECONNECT_NOW = "reconnectNow"
+    }
+
     // ── 配置 ────────────────────────────────────────────────────────────
     private val heartbeatMode: Map<Int, ILinkNative> = builder.heartbeatMode
-    // autoConnect 在 V2 链路里是必备组件,Builder.build() 已强制非空:
-    //  - handleAfterClose 的 Connected→Reconnecting 分支依赖 autoConnect 接管退避,
-    //    否则 engine 会卡死在 Reconnecting;
-    //  - Reconnecting 分支的"切 URL 立即重启 vs 让 autoConnect 退避"判断也需要 isActive()。
+    // autoConnect 在 V2 链路里是必备组件,Builder.build() 已强制非空:handleAfterClose 的
+    // Connected→Reconnecting 分支依赖 autoConnect 接管退避,否则 engine 会卡死在 Reconnecting。
     private val autoConnect: IAutoConnect = builder.autoConnect
         ?: error("autoConnect 不能为空,请通过 Builder.setAutoConnect 注入")
     // 内核重发池(可选能力):只收带业务 ID 的消息;跨 client 世代共享,engineOff 时整池回收
@@ -63,6 +66,12 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     // 探测成功也能预热缓存)。
     private val dnsCache: DnsCache = builder.dnsCache
     private val connectTimeout: Int = 5 * 1000
+
+    // 快速恢复(回前台 / reconnectNow),见 [FastResumePolicy]
+    private val foregroundModes: Set<Int> = builder.foregroundModes.toSet()
+    private val fastResumePolicy: FastResumePolicy = builder.fastResumePolicy
+    // 内部计时 + 「静默多久」「在途多久」的判定都用它;Android 注入 elapsedRealtime(含休眠)
+    private val elapsedClock: () -> Long = builder.elapsedClock
 
     /**
      * 给 autoConnect 用的「重连入口」。autoConnect.startConnect 通过它走 engineOn 路径,
@@ -78,9 +87,14 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         // #4:IReconnector.restart 的语义是「触发一次重连尝试」,不是「确保连着」——
         // 同 key 也必须真重建,见 [DispatchMode]
         val mode = if (reason == RestartReason.SCHEDULED) DispatchMode.RETRY else DispatchMode.REPLACE
+        restartAsync(mode, "autoConnect:$reason")
+    }
+
+    /** 锁外起线程:现拿 key(KeyProvider 可能卡)→ 按 [mode] 推进状态机 */
+    private fun restartAsync(mode: DispatchMode, reason: String) {
         Thread({
             val nextKey = resolveReconnectKey() ?: return@Thread
-            engineOnInternal(nextKey, mode, "autoConnect:$reason")
+            engineOnInternal(nextKey, mode, reason)
         }, "V2JWE-restart").start()
     }
 
@@ -120,7 +134,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
     // 15s 看门狗 —— 到点了如果 state 还是 Connecting(同 key) 且 client 还是当时那个,
     // 强 close() 走 onClose 链回到 Reconnecting,让 autoConnect 接管。
     // onOpen / handleAfterClose / engineOff 都要 unregister 它。
-    private val handshakeWatchdog = RapidResponseForceV4()
+    private val handshakeWatchdog = RapidResponseForceV4(clock = builder.elapsedClock)
     private val handshakeWatchdogId = "handshake-watchdog"
     private val handshakeTimeoutMs: Long = 15_000L
 
@@ -388,6 +402,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             resendPool = resendPool,
             certificatePinner = certificatePinner,
             dnsCache = dnsCache,
+            clock = elapsedClock,
         ).apply {
             javaWebSocketListener = this@V2JavaWebEngine.javaWebsocketListener
             setAutoConnect(autoConnect)
@@ -465,6 +480,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         val shouldNotify = synchronized(syncJWE) {
             if (state == EngineState.Idle) return@synchronized false
             handshakeWatchdog.unregister(handshakeWatchdogId)
+            fastResumeWatchdog.unregister(fastResumeProbeId)
             state = EngineState.Closing
             val client = webSocketClient
             // 顺序:解绑 listener → 停 timer → 停 auto-connect → close socket → 释放
@@ -565,6 +581,116 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         if (prev != mode) {
             ImcEvents.emit(ImcEvent.HeartbeatModeChanged(prev, mode))
         }
+        // 非前台档 → 前台档:回前台,走快速恢复
+        if (mode in foregroundModes && prev !in foregroundModes) {
+            fastResume(TRIGGER_FOREGROUND, force = false)
+        }
+    }
+
+    /**
+     * 立即重连:当前 client(含已连上的、在途的)一律换掉,清 autoConnect 退避。
+     * 不结束会话 —— 重发池、surveillance 订阅都保留(与 engineOff + engineOn 重建引擎不同)。
+     * 引擎未启动时 no-op。
+     */
+    override fun reconnectNow() {
+        fastResume(TRIGGER_RECONNECT_NOW, force = true)
+    }
+
+    // ── 快速恢复 ─────────────────────────────────────────────────────────
+
+    private val fastResumeWatchdog = RapidResponseForceV4(clock = elapsedClock)
+    private val fastResumeProbeId = "fast-resume-probe"
+
+    /** 上次快速恢复时刻(elapsedClock),去抖用;syncJWE 内读写 */
+    private var lastFastResumeAt = Long.MIN_VALUE
+
+    /**
+     * 按当前状态尽快拿回一条可用连接,策略见 [FastResumePolicy]。
+     *
+     * @param force true = 不管连接看起来多健康都重建([reconnectNow]),也不去抖
+     */
+    private fun fastResume(trigger: String, force: Boolean) {
+        val policy = fastResumePolicy
+        val now = elapsedClock()
+        if (!force) {
+            val debounced = synchronized(syncJWE) {
+                if (lastFastResumeAt != Long.MIN_VALUE && now - lastFastResumeAt < policy.debounceMs) {
+                    true
+                } else {
+                    lastFastResumeAt = now
+                    false
+                }
+            }
+            if (debounced) return
+        }
+        // 先让 autoConnect 清退避;正在等下次重连时它会不经调度器立即发起
+        val kicked = autoConnect.onResume()
+
+        var inboundIdleMs: Long? = null
+        var probeClient: WebSocketClientImpl? = null
+        val action: ImcEvent.FastResume.Action
+        val stateDesc: String
+        synchronized(syncJWE) {
+            val s = state
+            val c = webSocketClient
+            stateDesc = s.toString()
+            action = when (s) {
+                EngineState.Idle, EngineState.Closing -> ImcEvent.FastResume.Action.IDLE
+                // 等退避:autoConnect 已立即发起 / 已有尝试在途 → 交给它;没人管(WAIT_USER 中止、
+                // FAILOVER 被接管等)→ 引擎自己起
+                is EngineState.Reconnecting ->
+                    if (kicked || autoConnect.isActive()) ImcEvent.FastResume.Action.KICK_AUTO_CONNECT
+                    else ImcEvent.FastResume.Action.REPLACE
+                is EngineState.Connecting ->
+                    if (force || c == null || now - c.createdAt > policy.staleAttemptMs) {
+                        ImcEvent.FastResume.Action.REPLACE
+                    } else ImcEvent.FastResume.Action.KEEP
+                is EngineState.Connected -> {
+                    val idle = c?.let { now - it.lastInboundAt }
+                    inboundIdleMs = idle
+                    when {
+                        force || c == null || idle == null -> ImcEvent.FastResume.Action.REPLACE
+                        policy.staleAfterMs > 0 && idle > policy.staleAfterMs ->
+                            ImcEvent.FastResume.Action.REPLACE
+                        policy.probe == FastResumePolicy.Probe.NONE -> ImcEvent.FastResume.Action.KEEP
+                        else -> {
+                            probeClient = c
+                            ImcEvent.FastResume.Action.PROBE
+                        }
+                    }
+                }
+            }
+        }
+        ImcEvents.emit(ImcEvent.FastResume(trigger, stateDesc, action, inboundIdleMs))
+        when (action) {
+            ImcEvent.FastResume.Action.REPLACE -> restartAsync(DispatchMode.REPLACE, "fastResume:$trigger")
+            ImcEvent.FastResume.Action.PROBE -> startResumeProbe(probeClient!!, policy)
+            else -> Unit
+        }
+    }
+
+    /**
+     * 回前台探活:发一次探活帧,[FastResumePolicy.probeTimeoutMs] 内该 client 没收到任何入站
+     * (消息 / pong 都算,见 [WebSocketClientImpl.lastInboundAt])→ 判死重建。
+     * 期间 client 已被换掉 / 连接已断,探活作废。
+     */
+    private fun startResumeProbe(client: WebSocketClientImpl, policy: FastResumePolicy) {
+        val startedAt = elapsedClock()
+        when (policy.probe) {
+            FastResumePolicy.Probe.WS_PING -> client.sendProbePing()
+            FastResumePolicy.Probe.HEARTBEAT -> client.sendHeartbeatNow()
+            FastResumePolicy.Probe.NONE -> return
+        }
+        fastResumeWatchdog.register(fastResumeProbeId, policy.probeTimeoutMs) { _ ->
+            val dead = synchronized(syncJWE) {
+                state is EngineState.Connected && webSocketClient === client &&
+                    client.lastInboundAt < startedAt
+            }
+            if (dead) {
+                ImcEvents.emit(ImcEvent.FastResumeProbeFailed(policy.probeTimeoutMs))
+                restartAsync(DispatchMode.REPLACE, "fastResume:probe-timeout")
+            }
+        }
     }
 
     override fun onNetworkChange(networkState: Int) {
@@ -612,7 +738,29 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         private val certificatePinner: CertificatePinner? = null,
         /** P1: 端侧 DNS 缓存,接进库的 DnsResolver,DNS 抖动时回退历史 IP */
         private val dnsCache: DnsCache = DnsCache(),
+        /** 计时时钟(毫秒,只用差值),与引擎的 elapsedClock 一致 */
+        private val clock: () -> Long = { RapidResponseForceV4.nowMs() },
     ) : WebSocketClient(serverUri, Draft_6455(), httpHeaders, timeout) {
+
+        /** 本 client 创建时刻(clock);引擎据此判断在途尝试是否陈旧 */
+        val createdAt: Long = clock()
+
+        /**
+         * 最后一次收到入站(onOpen / 消息 / pong)的时刻(clock)。回前台的静默判死与探活
+         * 都看它 —— 不区分心跳的判活信号源,任何入站都证明链路此刻是通的。
+         */
+        @Volatile
+        var lastInboundAt: Long = createdAt
+            private set
+
+        /** 本次连接实际用的地址(DnsResolver 选出的),连接失败时据此 [DnsCache.markFailed] */
+        @Volatile
+        private var resolvedAddress: java.net.InetAddress? = null
+
+        @Volatile
+        private var everOpened = false
+
+        private fun markInbound() { lastInboundAt = clock() }
 
         init {
             // R6 修复:Java-WebSocket 自带 LCD(60s 默认)在 [WebSocket.startConnectionLostTimer]
@@ -632,8 +780,8 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             // 对长连接的影响抹平。DnsResolver 只能返回单个 InetAddress,取首个。
             setDnsResolver { resolveUri ->
                 val host = resolveUri.host ?: throw java.net.UnknownHostException("null host")
-                dnsCache.resolve(host).firstOrNull()
-                    ?: throw java.net.UnknownHostException(host)
+                (dnsCache.resolve(host).firstOrNull() ?: throw java.net.UnknownHostException(host))
+                    .also { resolvedAddress = it }
             }
         }
 
@@ -672,6 +820,8 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
                 close()
                 return
             }
+            everOpened = true
+            markInbound()
             retryingSendingCache()
             // RC1 修复:连接真正建立时强制重挂计时器(先停后启)。
             // spawn 时 onChangeMode 已 start 过一次,但起点是 spawn 时刻;握手若耗时
@@ -728,6 +878,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
 
         override fun onMessage(message: String) {
+            markInbound()
             retryingSendingCache()
             linkNative?.updateLastPong()
             // A1: 心跳应答(如 dataPing 的 "HEART_BEAT")由 SDK 吞掉,不转发给业务 listener。
@@ -737,6 +888,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         }
 
         override fun onMessage(bytes: ByteBuffer) {
+            markInbound()
             retryingSendingCache()
             linkNative?.updateLastPong()
             // A1: 同上,二进制心跳应答也由 SDK 吞掉。
@@ -774,6 +926,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         override fun onError(ex: Exception) {
             // N4:已被引擎换下,同 onClose
             if (superseded) return
+            markFailedAddressIfConnectError(ex)
             javaWebSocketListener?.onError(ex)
             if (isClosed) return
             stopConnectionLostTimerEx(true)
@@ -808,6 +961,31 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             super.close()
         }
 
+        /**
+         * 建连阶段(从未 onOpen)的 TCP 层失败:把本次用的地址在 DnsCache 里冷却,
+         * 下一次尝试换下一个地址(#4)。TLS / 协议层失败与地址无关,不标。
+         */
+        private fun markFailedAddressIfConnectError(ex: Exception) {
+            if (everOpened) return
+            val isTcpConnectFailure = ex is java.net.ConnectException ||
+                ex is java.net.NoRouteToHostException ||
+                ex is java.net.SocketTimeoutException ||
+                ex is java.net.PortUnreachableException
+            if (!isTcpConnectFailure) return
+            resolvedAddress?.let { dnsCache.markFailed(it) }
+        }
+
+        /** 回前台探活用的 WS ping;未打开 / 刚好被关时静默 */
+        internal fun sendProbePing() {
+            if (!isOpen) return
+            try { sendPing() } catch (_: org.java_websocket.exceptions.WebsocketNotConnectedException) {}
+        }
+
+        /** 回前台探活:按当前心跳档位立即发一次心跳 */
+        internal fun sendHeartbeatNow() {
+            linkNative?.sendHeartbeat()
+        }
+
         /** 引擎换代时调用:声明本 client 已被替换,之后的收场回调一律不作数。幂等。 */
         fun markSuperseded() {
             synchronized(syncConnectionLost) { superseded = true }
@@ -823,6 +1001,7 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         // ── 心跳层 ───────────────────────────────────────────────────
 
         override fun onWebsocketPong(conn: WebSocket?, f: Framedata?) {
+            markInbound()
             retryingSendingCache()
             // 走 onWsPong(而非 updateLastPong):让心跳实现能区分「pong 控制帧」
             // 与「普通入站消息」,WS_PONG_ONLY 判活与 cause=PONG 观测都依赖这个区分
@@ -971,6 +1150,25 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
         internal var keyProvider: IKeyProvider? = null
         internal var certificatePinner: CertificatePinner? = null
         internal var dnsCache: DnsCache = DnsCache()
+        internal var foregroundModes: Set<Int> = emptySet()
+        internal var fastResumePolicy: FastResumePolicy = FastResumePolicy()
+        internal var elapsedClock: () -> Long = { RapidResponseForceV4.nowMs() }
+
+        /**
+         * 声明哪些心跳档位算「前台」。[IEngine.onChangeMode] 从非前台档切入这些档位时,
+         * 引擎按 [setFastResumePolicy] 做快速恢复。不设 = 不做回前台快速恢复。
+         */
+        fun setForegroundModes(vararg modes: Int) = apply { foregroundModes = modes.toSet() }
+
+        /** 快速恢复策略(回前台 / [V2JavaWebEngine.reconnectNow]),见 [FastResumePolicy] */
+        fun setFastResumePolicy(policy: FastResumePolicy) = apply { fastResumePolicy = policy }
+
+        /**
+         * 内部计时时钟(毫秒,只用差值):握手看门狗、回前台的静默 / 在途时长判定。
+         * 默认 nanoTime;**Android 请注入 `SystemClock::elapsedRealtime`** —— nanoTime 在设备
+         * 休眠时不走,后台冻结十分钟会被当成几秒,静默判死与陈旧尝试判定全部失效。
+         */
+        fun setElapsedClock(clock: () -> Long) = apply { elapsedClock = clock }
 
         /** A5: 证书指纹校验钩子;wss:// 握手后立即比对,不通过则触发 close + TlsFailure(PIN_FAILURE) */
         fun setCertificatePinner(pinner: CertificatePinner) = apply { certificatePinner = pinner }

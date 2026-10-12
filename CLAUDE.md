@@ -69,11 +69,11 @@ The public contract for a long-lived socket session. **Only one implementation n
 
 Legacy `JavaWebEngine` / `OkhttpIEngine` / `UDPEngine` / `DefCustomHeartbeat` / `RapidResponseForce` / `RapidResponseForceV2` were all deleted — don't reference them in suggestions.
 
-URL handling: `engineOn(key)` records the URL in `EngineState`, normalizes `http://` → `ws://` and `https://` → `wss://`, then transitions through Connecting → Connected. Calling `engineOn(newKey)` while connected triggers a clean close → Reconnecting(newKey) → spawn new client. The state machine prevents the historical "currentKey not initialized" bug.
+URL handling: `engineOn(key)` records the URL in `EngineState`, normalizes `http://` → `ws://` and `https://` → `wss://`, then transitions through Connecting → Connected. Every client swap (`engineOn(newKey)`, autoConnect retry, transport change, fast resume) goes through `replaceClient`: the old client is `markSuperseded()` then closed, and a new one is spawned immediately. Late `onClose`/`onError` from a superseded client are ignored (no state change, no autoConnect wake-up). Internal restarts (`DispatchMode.RETRY`/`REPLACE`) never resurrect an engine that is `Idle`/`Closing` — only an explicit `engineOn` starts from Idle. The state machine prevents the historical "currentKey not initialized" bug.
 
 Engine states reported via `IEngine.engineState()`: `ENGINE_OPEN` / `ENGINE_CONNECTING` / `ENGINE_FAILED` (= Reconnecting) / `ENGINE_CLOSED`.
 
-**`autoConnect` is required** — `V2JavaWebEngine.Builder.build()` calls `error()` if not set, because `handleAfterClose` depends on `autoConnect.isActive()` to decide between "let auto-reconnect take over" and "restart immediately for URL switch". Without it the engine would busy-loop on close.
+**`autoConnect` is required** — `V2JavaWebEngine.Builder.build()` calls `error()` if not set, because after an abnormal close the engine sits in `Reconnecting` and relies on autoConnect to schedule the next attempt (via the injected `IReconnector.restart(RestartReason)`).
 
 **Pull-mode URL via `IKeyProvider`** — `Builder.setKeyProvider { ... }` lets the engine ask for the latest URL on every reconnect attempt (typical use: JWT token refresh, first-attempt vs retry flag, primary/backup host swap). Without it the engine reuses the URL passed to the first `engineOn(key)` call.
 
@@ -101,17 +101,17 @@ Heartbeats fire via `ITimeoutScheduler`. The library default is `RRFTimeoutSched
 
 ### Auto-reconnect — `IAutoConnect`
 
-`ProgressiveAutoConnect` implements exponential backoff: `reconnectDelay *= 2` up to `maxReconnectDelay` (default 128s). Triggered by `onClose` / `onError` inside `WebSocketClientImpl`. `engine.onNetworkChange(state)` and `engine.makeConnection()` both funnel into `resetStartAutoConnect()` to abort the current backoff and retry immediately.
+`ProgressiveAutoConnect` implements exponential backoff: `reconnectDelay *= 2` up to `maxReconnectDelay` (default 128s). Triggered by `onClose` / `onError` inside `WebSocketClientImpl`. `engine.onNetworkChange(state)` and `engine.makeConnection()` both funnel into `resetStartAutoConnect()` (compress a pending backoff timer to `immediateDelay`); when the connection is healthy they do nothing. Backoff doubling is clamped to `maxReconnectDelay`. Session-start bookkeeping (flapping) happens only in `onConnectionEstablished()` (called from `onOpen`), not in `stopAutoConnect()`.
 
 The engine injects an `IReconnector` into `ProgressiveAutoConnect` via `setReconnector(...)` — when the alarm fires, the reconnector calls back into `engine.engineOn(resolvedKey)` (asking `IKeyProvider` first, then state cache) to rebuild the socket through `spawnNewClient`. This fixed the historical `webSocketClient.reconnect()` no-op bug when the old client had been nulled out.
 
 If a `NetSurveillance` is passed to `ProgressiveAutoConnect.Builder.surveillance(...)`, backoff is replaced by `NetReport.recommend`:
-- `IMMEDIATE` / `FAILOVER` → `IMMEDIATE_DELAY_MS` (1000ms, see `ProgressiveAutoConnect.kt` companion — short delays get coalesced by `AlarmManager` batching on some ROMs)
+- `IMMEDIATE` / `FAILOVER` → `Builder.immediateDelay` (default `DEFAULT_IMMEDIATE_DELAY_MS` = 500ms). Platform floors (AlarmManager swallowing <1s alarms on Huawei) are the scheduler’s job — the demo `AutoConnectAlarmTimeoutScheduler` clamps to 1s itself
 - `BACKOFF_LONG` → `maxReconnectDelay`
 - `BACKOFF_NORMAL` → original exponential
 - `WAIT_USER` → abort scheduling entirely
 
-`maxImmediateRetries` (default 3) is a **hard floor**: even if surveillance keeps recommending `IMMEDIATE`, after N consecutive 1-second retries the action is forcibly downgraded to `BACKOFF_NORMAL` to avoid burning battery on a no-signal stretch. Counter resets in `stopAutoConnect()` (connection success / explicit stop).
+`maxImmediateRetries` (default 3) is a **hard floor**: even if surveillance keeps recommending `IMMEDIATE`, after N consecutive immediate retries the action is forcibly downgraded to `BACKOFF_NORMAL` to avoid burning battery on a no-signal stretch. Counter resets in `stopAutoConnect()` (connection success / explicit stop).
 
 A `Builder.onFailover(OnFailoverHandler)` hook fires when `FAILOVER` is recommended — the App typically calls `engine.engineOn(backupUrl)` and returns `true` to tell the SDK to stop retrying the current URL.
 
@@ -183,3 +183,17 @@ If a new state change is worth surfacing to monitoring, add a new `ImcEvent` sub
 - Engine API methods (`engineOn`, `send`, etc.) may be called from any thread; the demo wraps `engineOn` in a `Thread { }` because `WebSocketClient.connect()` blocks.
 - Comments and log strings are predominantly Chinese — preserve language when editing nearby code unless asked otherwise.
 - The codebase is pre-release. **No need to preserve backwards compatibility** when refactoring; prefer breaking-clean over adding `@Deprecated` shims.
+
+### Fast resume (foreground / `reconnectNow`) — `FastResumePolicy`
+
+`onChangeMode(mode)` is also the foreground/background switch. Declare which modes are "foreground" with `V2JavaWebEngine.Builder.setForegroundModes(...)`; switching from a non-foreground mode into one triggers `fastResume`, which acts on the current state:
+
+- **Connected** — if `now - client.lastInboundAt > staleAfterMs` (0 = off) replace the client straight away; else send a probe (`WS_PING` / `HEARTBEAT` / `NONE`) and replace if no inbound arrives within `probeTimeoutMs`.
+- **Connecting** — replace the in-flight attempt if older than `staleAttemptMs`.
+- **Reconnecting** — `IAutoConnect.onResume()` resets backoff / immediate-retry budget and fires **directly, bypassing the `ITimeoutScheduler`** (alarms delayed by the OS in background are not awaited).
+
+`IEngine.reconnectNow()` does the same with `force = true` (always replaces, no debounce). Unlike engineOff + rebuilding the engine, it keeps the session: resend pool, surveillance subscription and autoConnect all survive. Decisions are emitted as `ImcEvent.FastResume` / `FastResumeProbeFailed`.
+
+All of this is measured with `Builder.setElapsedClock` (also on `ProgressiveAutoConnect.Builder` and `RapidResponseForceV4(clock=)`). Default is `nanoTime`, which **does not advance during device sleep on Android** — Android integrations must inject `SystemClock::elapsedRealtime`, otherwise a 10-minute freeze looks like a few seconds.
+
+`DnsCache.markFailed(address)`: a TCP-level connect failure before `onOpen` cools down the address that was used (5 min), so the next attempt picks the next resolved address (Java-WebSocket's `DnsResolver` can only return one).

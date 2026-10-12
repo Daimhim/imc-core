@@ -229,6 +229,7 @@ class QgbWsTestActivity : AppCompatActivity() {
         //    autoConnect 用 var 单独存一份,调试面板要拿它的 status() 渲染重连信息
         autoConnect = ProgressiveAutoConnect.Builder()
             .setTimeoutScheduler(AutoConnectAlarmTimeoutScheduler("Qgb-auto"))
+            .setElapsedClock { android.os.SystemClock.elapsedRealtime() }
             .surveillance(surveillance)
             .onFailover {
                 // FAILOVER 钩子: 本 demo 没有备用端点, 仅打日志
@@ -258,6 +259,16 @@ class QgbWsTestActivity : AppCompatActivity() {
             .addHeartbeatMode(BG_FIXED_HEARTBEAT, bgFixedHeartbeat)
             .addHeartbeatMode(NONE_HEARTBEAT, noopHeartbeat)
             .setAutoConnect(autoConnect)
+            // 回前台快速恢复:FIXED 档是前台。服务端 60s 空闲踢人 → 静默超 50s 直接重建;
+            // 否则发一次 JSON 心跳探活(服务端回 HEART_BEAT),3s 无入站即重建
+            .setForegroundModes(FIXED_HEARTBEAT)
+            .setFastResumePolicy(
+                org.daimhim.imc_core.FastResumePolicy(
+                    staleAfterMs = 50_000L,
+                    probe = org.daimhim.imc_core.FastResumePolicy.Probe.HEARTBEAT,
+                )
+            )
+            .setElapsedClock { android.os.SystemClock.elapsedRealtime() }
             .setDnsCache(dnsCache)
             // KeyProvider:autoConnect 每次重连都现拿 url,这样 state=0→1 翻转能跟着每一次重试走,
             // 而不是固化在首次 engineOn 传入的 url 里。

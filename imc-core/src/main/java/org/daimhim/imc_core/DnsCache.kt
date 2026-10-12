@@ -47,7 +47,7 @@ class DnsCache(
         val now = clock()
         val cached = cache[host]
         if (cached != null && now < cached.freshUntilMs) {
-            return cached.addrs
+            return preferHealthy(cached.addrs, now)
         }
         return try {
             val fresh = resolver(host).toList()
@@ -56,14 +56,42 @@ class DnsCache(
                 freshUntilMs = now + ttlMs,
                 staleUntilMs = now + staleMaxTtlMs,
             )
-            fresh
+            preferHealthy(fresh, now)
         } catch (e: UnknownHostException) {
             if (cached != null && now < cached.staleUntilMs) {
                 // fresh 失败 + stale 在 stale-window 内 → 兜底用上次的 IP
-                return cached.addrs
+                return preferHealthy(cached.addrs, now)
             }
             throw e
         }
+    }
+
+    /** address → 冷却截止时刻。见 [markFailed] */
+    private val failedUntil = ConcurrentHashMap<InetAddress, Long>()
+
+    /**
+     * 标记某个地址刚连接失败(TCP 层:拒绝 / 超时 / 无路由)。冷却期内 [resolve] 把它排到最后。
+     *
+     * 为什么需要:Java-WebSocket 的 DnsResolver 只能返回单个地址,引擎取首个。首个地址不通
+     * (典型:双栈主机的 IPv6 在当前网络不可达)时,每次重连都撞同一个地址,等满连接超时再退避。
+     * 标记后下一次尝试自动换下一个地址;全部被标记时按最早解冻的优先,不会无地址可用。
+     */
+    fun markFailed(address: InetAddress, cooldownMs: Long = FAILED_COOLDOWN_MS) {
+        failedUntil[address] = clock() + cooldownMs
+    }
+
+    /** 冷却中的地址排后(稳定排序,保留解析器给的优先级);冷却过期的顺手清掉 */
+    private fun preferHealthy(addrs: List<InetAddress>, now: Long): List<InetAddress> {
+        if (failedUntil.isEmpty() || addrs.size < 2) return addrs
+        val (cooling, healthy) = addrs.partition { a ->
+            val until = failedUntil[a] ?: return@partition false
+            if (now >= until) {
+                failedUntil.remove(a, until)
+                false
+            } else true
+        }
+        if (cooling.isEmpty()) return addrs
+        return healthy + cooling.sortedBy { failedUntil[it] ?: 0L }
     }
 
     /** 主动失效一个 host(给业务在发现服务端 IP 改了时调) */
@@ -74,10 +102,12 @@ class DnsCache(
     /** 清空 */
     fun clear() {
         cache.clear()
+        failedUntil.clear()
     }
 
     companion object {
         const val DEFAULT_TTL_MS = 300_000L          // 5min
         const val STALE_MAX_TTL_MS = 24 * 3600_000L  // 24h
+        const val FAILED_COOLDOWN_MS = 300_000L      // 5min
     }
 }

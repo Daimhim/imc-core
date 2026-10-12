@@ -62,6 +62,7 @@ object ImcEventLogBridge {
         is ImcEvent.ConnectionLost -> LogStore.Level.ERROR
 
         is ImcEvent.HandshakeWatchdogFired,
+        is ImcEvent.FastResumeProbeFailed,
         is ImcEvent.AutoConnectAborted,
         is ImcEvent.AutoConnectProbeRequested,
         is ImcEvent.HeartbeatDegraded,
@@ -97,6 +98,10 @@ object ImcEventLogBridge {
                 "[$cat] keyChanged old=${e.oldKey?.trunc(60)} new=${e.newKey.trunc(60)}"
             is ImcEvent.EngineStopped ->
                 "[$cat] engineOff"
+            is ImcEvent.FastResume ->
+                "[$cat] fastResume trigger=${e.trigger} action=${e.action} state=${e.engineState.trunc(60)} inboundIdle=${e.inboundIdleMs}ms"
+            is ImcEvent.FastResumeProbeFailed ->
+                "[$cat] fastResume probe timeout (${e.timeoutMs}ms) → replace"
 
             // ── HEARTBEAT
             is ImcEvent.HeartbeatSent ->

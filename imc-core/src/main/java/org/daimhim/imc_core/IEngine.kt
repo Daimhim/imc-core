@@ -90,17 +90,24 @@ interface IEngine {
     fun setIMCStatusListener(listener: IMCStatusListener?)
 
     /**
-     * 切换心跳模式。
+     * 切换心跳模式,也是前后台切换的入口。
      *
      * @param mode 心跳模式 key,对应 [V2JavaWebEngine.Builder] 里 addHeartbeatMode 注册的档位
-     *   (例如前台 / 后台不同心跳间隔)。
+     *   (例如前台 / 后台不同心跳间隔)。从非前台档切入 `setForegroundModes` 声明的前台档时,
+     *   引擎做回前台快速恢复,见 [FastResumePolicy]。
      */
     fun onChangeMode(mode:Int)
     /** 通知引擎网络状态变化(由业务侧的网络监听转发触发)。 */
     fun onNetworkChange(networkState:Int)
 
     /**
-     * 主动触发重连
+     * 催重连:等退避中 → 压缩到立即;连接健康 → 不动。
      */
     fun makeConnection()
+
+    /**
+     * 立即重连:不管当前连接看起来多健康都换掉,并清退避。不结束会话(重发池等保留),
+     * 用于替代业务侧 engineOff + 重建引擎的强制重连。默认实现退化为 [makeConnection]。
+     */
+    fun reconnectNow() = makeConnection()
 }

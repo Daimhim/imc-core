@@ -151,6 +151,45 @@ sealed class ImcEvent {
         override val category get() = Category.ENGINE
     }
 
+    /**
+     * 快速恢复(回前台 / [V2JavaWebEngine.reconnectNow])做出的决策。
+     *
+     * @param trigger `foreground` / `reconnectNow`
+     * @param engineState 决策时的引擎状态
+     * @param action 见 [Action]
+     * @param inboundIdleMs Connected 时距最后一次入站的时长;其它状态为 null
+     */
+    data class FastResume(
+        val trigger: String,
+        val engineState: String,
+        val action: Action,
+        val inboundIdleMs: Long? = null,
+        override val timestamp: Long = System.currentTimeMillis(),
+    ) : ImcEvent() {
+        override val category get() = Category.ENGINE
+
+        enum class Action {
+            /** 连接看起来健康(静默未超阈值且不探活),不动 */
+            KEEP,
+            /** 发探活,超时未收到任何入站则重建 */
+            PROBE,
+            /** 直接重建 client(静默超阈值 / 在途尝试陈旧 / 显式 reconnectNow) */
+            REPLACE,
+            /** 交给 autoConnect:清退避并立即发起(不经调度器) */
+            KICK_AUTO_CONNECT,
+            /** 引擎未启动,无事可做 */
+            IDLE,
+        }
+    }
+
+    /** 回前台探活超时,连接判死并重建 */
+    data class FastResumeProbeFailed(
+        val timeoutMs: Long,
+        override val timestamp: Long = System.currentTimeMillis(),
+    ) : ImcEvent() {
+        override val category get() = Category.ENGINE
+    }
+
     // ── HEARTBEAT ──────────────────────────────────────────────────────────
 
     data class HeartbeatSent(
