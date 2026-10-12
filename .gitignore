@@ -17,3 +17,5 @@ local.properties
 /repo
 /.local-logs
 /test-records
+# 根目录调试截图不入库
+/*.png
