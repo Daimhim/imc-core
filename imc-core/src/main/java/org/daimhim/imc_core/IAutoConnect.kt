@@ -119,17 +119,16 @@ data class ReconnectStatus(
 class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
     companion object {
         /**
-         * IMMEDIATE / FAILOVER 决策对应的实际调度延时。
+         * IMMEDIATE / FAILOVER 决策对应的默认调度延时,可用 [Builder.immediateDelay] 改。
          *
-         * 历史值是 initReconnectDelay=1000ms,语义跟 IMMEDIATE 自相矛盾,但小值不可靠 ——
-         * 实测 HRY-AL00a 上 100ms / 500ms 的 setExact 都会被 Huawei 系统的 alarm 批处理吞掉,
-         * 直到 1000ms 才稳定 fire。回到 1000ms 保稳定;短延时优化需要换调度器(例如 Handler /
-         * Choreographer)而非 AlarmManager 才能做到,留作后续。
+         * 历史上是写死的 1000ms —— 那是 AlarmManager 在华为 ROM 上吞 <1s 闹钟的约束,
+         * 属于调度器的平台限制,不该由内核替所有调度器承担(线程调度器白白多等 1s)。
+         * 现在各调度器自己夹下限(如 Android 侧 AlarmTimeoutScheduler 的 MIN_ALARM_DELAY_MS)。
          *
-         * 公开是因为 [ReconnectAction.IMMEDIATE] 的 KDoc 需要引用此常量,
-         * 说清"立即"背后的实际调度延迟。业务侧不应当依赖此常量做调度,只用于阅读。
+         * 不取 0:网络恢复瞬间 DNS/路由常还没就绪,0ms 连发会在几十毫秒内烧光
+         * [Builder.maxImmediateRetries] 的快试额度,随即掉进指数退避;留一点间隔让快试覆盖恢复窗口。
          */
-        const val IMMEDIATE_DELAY_MS = 1000L
+        const val DEFAULT_IMMEDIATE_DELAY_MS = 500L
 
         /**
          * A7: 链路降级状态下的 attempt-timeout(默认 10s)。正常是 30s。
@@ -224,6 +223,9 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
      */
     @Volatile private var consecutiveImmediateRetries: Int = 0
     private val maxImmediateRetries: Int = builder.maxImmediateRetries
+
+    /** IMMEDIATE / FAILOVER 的实际调度延时,见 [DEFAULT_IMMEDIATE_DELAY_MS] */
+    private val immediateDelayMs: Long = builder.immediateDelayMs
 
     /** reset-kick 最近一次压缩 pending 定时器的时刻(去抖用,见 [resetStartAutoConnect]) */
     @Volatile private var lastResetKickTs: Long = 0L
@@ -380,8 +382,8 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
                 if (isWaitingNextAutomaticConnection) {
                     reconnectDelay = initReconnectDelay
                     timeoutScheduler.stop()
-                    timeoutScheduler.start(IMMEDIATE_DELAY_MS)
-                    lastScheduledDelay = IMMEDIATE_DELAY_MS
+                    timeoutScheduler.start(immediateDelayMs)
+                    lastScheduledDelay = immediateDelayMs
                     lastEffectiveAction = ReconnectAction.IMMEDIATE
                 }
             }
@@ -437,7 +439,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
                     // IMMEDIATE/FAILOVER 代表编排层判定网络恢复了 —— 把指数退避基数也压回
                     // initReconnectDelay,否则后面再失败会从上一次的大 delay 继续翻倍。
                     reconnectDelay = initReconnectDelay
-                    IMMEDIATE_DELAY_MS
+                    immediateDelayMs
                 }
                 ReconnectAction.BACKOFF_LONG -> {
                     // 确认离线 → 清空快试额度,等真恢复时重新发 3 次快试
@@ -528,7 +530,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         // 越晚(日志实测 400ms 内 4 次连环 reset,fire 被推迟 >1s;极端下重连可被无限推迟)。
         //
         // 新语义(与 V2JavaWebEngine.kickReconnect 的"立即催"注释对齐):
-        //  - 等待下次重连中 → 把 pending 定时器**压缩**到 IMMEDIATE_DELAY_MS;已经是
+        //  - 等待下次重连中 → 把 pending 定时器**压缩**到 immediateDelayMs;已经是
         //    IMMEDIATE 则 no-op(重复重挂 1s 定时器同样会推后 fire),[RESET_KICK_DEBOUNCE_MS]
         //    内的重复 poke 忽略
         //  - attempt 在飞    → no-op,让本轮握手自然回归
@@ -541,14 +543,14 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
             when {
                 isWaitingNextAutomaticConnection -> {
                     val now = System.currentTimeMillis()
-                    if (lastScheduledDelay > IMMEDIATE_DELAY_MS &&
+                    if (lastScheduledDelay > immediateDelayMs &&
                         now - lastResetKickTs >= RESET_KICK_DEBOUNCE_MS
                     ) {
                         lastResetKickTs = now
                         prevDelay = lastScheduledDelay
                         timeoutScheduler.stop()
-                        timeoutScheduler.start(IMMEDIATE_DELAY_MS)
-                        lastScheduledDelay = IMMEDIATE_DELAY_MS
+                        timeoutScheduler.start(immediateDelayMs)
+                        lastScheduledDelay = immediateDelayMs
                         COMPRESS
                     } else {
                         NOOP
@@ -561,10 +563,10 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
         when (decision) {
             COMPRESS -> {
                 // 锁外 emit(项目约定:sink 卡顿不能反压调度线程)
-                ImcEvents.emit(ImcEvent.AutoConnectAborted("reset-kick:${prevDelay}ms->$IMMEDIATE_DELAY_MS"))
+                ImcEvents.emit(ImcEvent.AutoConnectAborted("reset-kick:${prevDelay}ms->$immediateDelayMs"))
                 ImcEvents.emit(
                     ImcEvent.AutoConnectScheduled(
-                        delayMs = IMMEDIATE_DELAY_MS,
+                        delayMs = immediateDelayMs,
                         action = lastEffectiveAction,
                         retryCount = retryCount,
                     )
@@ -659,7 +661,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
                 probeFailureCount = consecutiveImmediateRetries
             }
             val nextDelay = when (action) {
-                // 编排层认为网络一切正常,立即重试 —— 真的立即,0ms
+                // 编排层认为网络一切正常,按 immediateDelayMs 快试
                 // (历史是 initReconnectDelay=1000ms,语义跟 IMMEDIATE 自相矛盾,导致 4a 测试
                 //  wifi 恢复 → onOpen 平均 5.5s 里有 1s 是这个无谓等待;
                 //  throttle 硬地板 [maxImmediateRetries] 仍兜底,IMMEDIATE 连失 3 次会自动降级到
@@ -667,7 +669,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
                 ReconnectAction.IMMEDIATE,
                 ReconnectAction.FAILOVER -> {
                     consecutiveImmediateRetries++  // 用掉一次快试额度
-                    IMMEDIATE_DELAY_MS
+                    immediateDelayMs
                 }
                 // 用户没网/挂起,直接顶满;确认离线 → 清空快试额度,等真恢复重新给
                 ReconnectAction.BACKOFF_LONG -> {
@@ -678,9 +680,8 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
                 ReconnectAction.WAIT_USER,
                 ReconnectAction.BACKOFF_NORMAL,
                 null -> {
-                    if (reconnectDelay < maxReconnectDelay) {
-                        reconnectDelay = delay * 2
-                    }
+                    // 翻倍后夹到上限:历史实现只判「翻倍前 < max」,init=1s/max=60s 时会退到 64s
+                    reconnectDelay = minOf(delay * 2, maxReconnectDelay)
                     reconnectDelay
                 }
             }
@@ -767,7 +768,7 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
                 ReconnectAction.IMMEDIATE,
                 ReconnectAction.FAILOVER -> {
                     reconnectDelay = initReconnectDelay
-                    IMMEDIATE_DELAY_MS
+                    immediateDelayMs
                 }
                 ReconnectAction.BACKOFF_LONG -> {
                     consecutiveImmediateRetries = 0
@@ -984,6 +985,9 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
          */
         internal var maxImmediateRetries : Int = 3
 
+        /** IMMEDIATE / FAILOVER 的调度延时,默认 [DEFAULT_IMMEDIATE_DELAY_MS] */
+        internal var immediateDelayMs : Long = DEFAULT_IMMEDIATE_DELAY_MS
+
         /**
          * 单次 attempt 超时兜底,默认 30000ms。详见 [ProgressiveAutoConnect.attemptTimeoutMs] KDoc。
          */
@@ -995,6 +999,14 @@ class ProgressiveAutoConnect(val builder:Builder) : IAutoConnect{
 
         fun initReconnectDelay(delay: Long, unit: TimeUnit) = apply {
             initReconnectDelay = checkDurationMs("initReconnectDelay", delay, unit)
+        }
+
+        /**
+         * IMMEDIATE / FAILOVER 决策的调度延时。调度器有平台下限的(AlarmManager)由调度器自己夹,
+         * 这里只表达内核意图。
+         */
+        fun immediateDelay(delay: Long, unit: TimeUnit) = apply {
+            immediateDelayMs = checkDurationMs("immediateDelay", delay, unit).toLong()
         }
 
         fun maxImmediateRetries(count: Int) = apply {

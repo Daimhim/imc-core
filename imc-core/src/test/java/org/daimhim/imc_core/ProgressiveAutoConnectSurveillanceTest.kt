@@ -49,7 +49,7 @@ class ProgressiveAutoConnectSurveillanceTest {
     )
 
     @Test
-    fun `surveillance 推 IMMEDIATE 时重排到 initDelay`() {
+    fun `surveillance 推 IMMEDIATE 时重排到 immediateDelay`() {
         val sched = RecordingScheduler()
         val surv = FakeSurveillance(makeReport(ReconnectAction.BACKOFF_LONG))
         val auto = ProgressiveAutoConnect.Builder()
@@ -65,12 +65,12 @@ class ProgressiveAutoConnectSurveillanceTest {
         assertEquals(listOf(30000L), sched.starts)
         val stopsBefore = sched.stops.get()
 
-        // 此时 surveillance 推 IMMEDIATE → 应该 stop 当前定时 + 重排到 initReconnectDelay=1000
+        // 此时 surveillance 推 IMMEDIATE → 应该 stop 当前定时 + 重排到 immediateDelay
         surv.push(makeReport(ReconnectAction.IMMEDIATE))
 
         assertTrue("应该 stop 当前定时", sched.stops.get() > stopsBefore)
-        assertEquals("应有 2 次 start,后一次 = initDelay",
-            listOf(30000L, 1000L), sched.starts)
+        assertEquals("应有 2 次 start,后一次 = immediateDelay",
+            listOf(30000L, ProgressiveAutoConnect.DEFAULT_IMMEDIATE_DELAY_MS), sched.starts)
     }
 
     @Test
@@ -84,7 +84,7 @@ class ProgressiveAutoConnectSurveillanceTest {
             .build()
 
         auto.startAutoConnect()
-        assertEquals(listOf(1000L), sched.starts)
+        assertEquals(listOf(ProgressiveAutoConnect.DEFAULT_IMMEDIATE_DELAY_MS), sched.starts)
         val stopsBefore = sched.stops.get()
 
         surv.push(makeReport(ReconnectAction.WAIT_USER))

@@ -12,9 +12,9 @@ enum class ReconnectAction {
      * 立即重试。
      *
      * **注意**:这只是"决策层"信号,真正的调度延迟由 [IAutoConnect] 实现决定。
-     * 默认 [ProgressiveAutoConnect] 把 IMMEDIATE 映射成 1s 最小延迟
-     * ([ProgressiveAutoConnect.IMMEDIATE_DELAY_MS]),原因是 AlarmManager
-     * 在部分 ROM 上对短延时(<1s) 会被批处理吞掉。
+     * 默认 [ProgressiveAutoConnect] 把 IMMEDIATE 映射成
+     * [ProgressiveAutoConnect.DEFAULT_IMMEDIATE_DELAY_MS](可用 Builder.immediateDelay 改);
+     * 调度器若有平台下限(如 AlarmManager 在部分 ROM 上吞 <1s 闹钟)由调度器自己夹。
      */
     IMMEDIATE,
 

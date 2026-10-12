@@ -110,6 +110,8 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
 
     @Volatile
     private var state: EngineState = EngineState.Idle
+    // 写都在 syncJWE 内;kickReconnect / onChangeMode 等锁外快照读,需要可见性
+    @Volatile
     private var webSocketClient: WebSocketClientImpl? = null
 
     // ── handshake watchdog ──────────────────────────────────────────────
@@ -637,9 +639,14 @@ class V2JavaWebEngine private constructor(builder: Builder) : IEngine {
             }
         }
 
+        // 以下字段在引擎线程写、在 java-websocket 读线程 / 计时器线程读,需要可见性
+        @Volatile
         var javaWebSocketListener: JavaWebSocketListener? = null
+        @Volatile
         private var isClosed = false
+        @Volatile
         private var linkNative: ILinkNative? = null
+        @Volatile
         private var autoConnect: IAutoConnect? = null
         private val syncConnectionLost = Any()
 

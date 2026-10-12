@@ -105,13 +105,28 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
             return null
         }
     }
-    override fun initLinkNative(webSocketClient: V2JavaWebEngine.WebSocketClientImpl) {
-        if (this.webSocketClient == webSocketClient){
-            return
-        }
-        this.webSocketClient = webSocketClient
+    init {
+        // 早绑定(同 V2FixedHeartbeat):首个 startConnectionLostTimer 先于 initLinkNative 也有回调
         timeoutScheduler.setCallback(timeoutCall)
     }
+
+    override fun initLinkNative(webSocketClient: V2JavaWebEngine.WebSocketClientImpl) {
+        if (this.webSocketClient === webSocketClient) return
+        synchronized(sync) {
+            if (isRunning) {
+                // RC1(同 V2FixedHeartbeat):旧 client 世代残留的计时器必须强杀,
+                // 否则新 client 的 startConnectionLostTimer 被 `if (isRunning) return` 拦掉,
+                // 新会话从此没有心跳
+                timeoutScheduler.stop()
+            }
+            isRunning = false
+            hasPongBeenReceived = false
+            this.webSocketClient = webSocketClient
+        }
+    }
+
+    /** 代际守卫:旧 client 迟到的 onClose/onError 不得停掉新 client 的计时器 */
+    override fun currentAttachedClient(): V2JavaWebEngine.WebSocketClientImpl? = webSocketClient
 
     override fun getConnectionLostTimeout(): Int {
         synchronized(sync){
@@ -149,15 +164,17 @@ class V2SmartHeartbeat(builder:Builder) : ILinkNative {
     }
 
     override fun stopConnectionLostTimer(isError:Boolean) {
-        // A3: 记录本次连接生命周期,供 NAT idle 自适应检测使用
-        val lifetimeSec = if (sessionStartMs > 0L && isError) {
-            (System.currentTimeMillis() - sessionStartMs) / 1000L
-        } else 0L
-        synchronized(sync){
+        // A3: 记录本次连接生命周期,供 NAT idle 自适应检测使用。
+        // 锁内算、且只在真正停掉运行中的计时器时算 —— 同一次断连 stop 常被调两次
+        // (close() 路径 + onClose 路径),锁外先算会把一次生命周期记两遍
+        val lifetimeSec = synchronized(sync){
             if (!isRunning) return
             isRunning = false
             hasPongBeenReceived = false
             timeoutScheduler.stop()
+            if (sessionStartMs > 0L && isError) {
+                (System.currentTimeMillis() - sessionStartMs) / 1000L
+            } else 0L
         }
         // #3 双计数:这里不再调 onHeartbeatFailure。连接错误(onClose/onError)意味着
         // 连接已经死了,不是「漏了一次心跳」;记一次会让 close() → onClose →

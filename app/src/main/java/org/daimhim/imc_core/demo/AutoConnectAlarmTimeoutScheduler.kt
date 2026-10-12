@@ -15,6 +15,8 @@ import java.util.concurrent.Callable
 class AutoConnectAlarmTimeoutScheduler(private val name:String) : ITimeoutScheduler {
     companion object {
         const val AUTO_CONNECT_ALARM_TIMEOUT_ACTION = "com.zjkj.im_core.action.AUTO_CONNECT_ALARM_TIMEOUT_ACTION"
+        /** 华为 ROM 对 <1s 的 setExact 批处理吞掉;内核不再替调度器夹下限,由这里夹 */
+        private const val MIN_ALARM_DELAY_MS = 1000L
     }
     private var pendingIntent:PendingIntent
     init {
@@ -36,7 +38,7 @@ class AutoConnectAlarmTimeoutScheduler(private val name:String) : ITimeoutSchedu
         Timber.i("AlarmTimeoutScheduler.start $name $time")
         synchronized(sync){
             isStop = false
-            val triggerTime = SystemClock.elapsedRealtime() + time
+            val triggerTime = SystemClock.elapsedRealtime() + maxOf(time, MIN_ALARM_DELAY_MS)
             val alarmManager = ContextHelper
                 .getApplication()
                 .getSystemService(Context.ALARM_SERVICE) as AlarmManager
