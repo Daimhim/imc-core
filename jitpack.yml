@@ -3,8 +3,16 @@ jdk:
 
 # services.gradle.org / 腾讯镜像对 JitPack 机房均不可达(2026-08 实测),
 # 改用 SDKMan(JitPack 官方 init 步骤,CDN 必达)安装 gradle,绕开 wrapper 下载。
+before_install:
+  # JitPack 新镜像(latest)里 /build 属主不一致,git 会报
+  # "detected dubious ownership in repository at '/build'"。1.1.17 构建日志里已有此报错。
+  - git config --global --add safe.directory /build || true
+
 install:
   - sdk install gradle 7.6.6 || true
   - sdk use gradle 7.6.6 || true
   - gradle --version
-  - gradle :imc-core:publishReleaseJarPublicationToMavenLocal --no-daemon
+  # -c 隔离:根 build.gradle.kts 的 plugins{} 即使 apply false 也会解析 AGP/Compose,
+  # 在新镜像上会挂死(1.1.17 超时根因)。jitpack.settings.gradle.kts 里用
+  # rootProject.buildFileName 换成空的 jitpack.build.gradle.kts,只构建 :imc-core。
+  - gradle -c jitpack.settings.gradle.kts :imc-core:publishReleaseJarPublicationToMavenLocal --no-daemon --stacktrace
